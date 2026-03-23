@@ -2,7 +2,7 @@ mpv-cHiDeNoise-AI
 ---
 mpvベースのAI再生プレーヤー「mpv-cHiDeNoise-AI」関連の自作ファイルや編集済みファイルを GitHub で管理していくための個人用リポジトリです。（windows11）
 
-紹介動画:
+V3.0紹介動画:
 ---
 - [mpv-cHiDeNoise-AI 紹介動画](https://www.youtube.com/watch?v=xrgJoh29bpM)
 
