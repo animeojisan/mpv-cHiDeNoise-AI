@@ -2,6 +2,7 @@ mpv-cHiDeNoise-AI
 ---
 mpvベースのAI再生プレーヤー「mpv-cHiDeNoise-AI」関連の自作ファイルや編集済みファイルを GitHub で管理していくための個人用リポジトリです。（windows11）
 
+onnxを使用したAIアップスケーリング、Anime4KなどのGLSLシェーダー、vapoursynthフィルターなど多種多様なツールを搭載。リアルタイム処理で高画質な再生を楽しめるフリーの再生プレーヤーです。
 
 紹介動画
 ---
