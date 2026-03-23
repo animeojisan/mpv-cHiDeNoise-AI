@@ -19,4 +19,4 @@ NOTICE
 
 上流由来ファイルに関するライセンス情報についてはUPSTREAM_LICENSES.txt を参照してください。
 
-Python 系第三者コンポーネントに関するライセンス情報についてはTHIRD_PARTY_LICENSES_python.txt を参照してください。
+Python 系サードパーティに関するライセンス情報についてはTHIRD_PARTY_LICENSES_python.txt を参照してください。
