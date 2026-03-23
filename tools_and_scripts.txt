@@ -1,0 +1,107 @@
+Tools and Scripts
+
+■ Lua scripts
+・4-3blur.lua
+  4:3 黒帯用ブラー
+
+・4-3blur-plus.lua
+  4:3 黒帯用ブラー
+
+・dshow-extinput-picker.lua
+  外部入力キャプチャデバイスの認識・選択
+
+・disable_subs.lua
+  YouTube の字幕を表示しない
+
+・history_clear.lua
+  視聴履歴をクリア
+
+・hwdec-setter.lua
+  hwdec をメニューから選択
+
+・open_config_folder.lua
+  メニューから portable_config フォルダーを開く
+
+・profile_settings.lua
+  プロファイル設定用
+  selected_profile.conf にプロファイルが書き込まれる
+
+・render_fps_osd.lua
+  実fps表示 / 測定
+
+・save_position_and_size.lua
+  終了時の画面位置とサイズを記憶する
+
+・vysnc-setter.lua
+  vysnc メニュー選択
+
+・dvdmenu_return.lua
+  DVD メニュー表示用補助
+  ※ 自動生成される
+
+■ Python / VapourSynth
+・onnxVSR.py
+  VSR ONNX 対応
+
+・onnxVSR-DML.vpy
+  VSR ONNX 対応
+
+・mpv_temporalfix.py
+  テンポラルノイズ修正
+  使用DLL:
+  retinex.dll / tcanny.dll / libmotionmask.dll / libfillborders.dll / zsmooth.dll / vszip.dll
+  これらの DLL は `vs-plugins` に配置
+  mpv_temporalfix.py は `mpv.exe` と同じ場所に配置
+
+■ Config / data
+・selected_profile.conf
+  profile_settings.lua 用設定ファイル
+
+・dshow_cmd_launch.conf
+  外部キャプチャ設定用
+  NTSC 優先のオン / オフを設定
+
+・tv_frame-a.lua
+  4:3 黒帯用画像
+  ※ ファイル名・拡張子は要確認
+
+■ Executables
+・open_folder.exe
+  portable_config フォルダーを開く補助ツール
+
+・mpvCapGC_30_YUV.exe
+  ウィンドウキャプチャ
+
+・mpvCapGC_60_YUV.exe
+  ウィンドウキャプチャ
+
+・mpv-W.exe
+  多重起動を防ぐ
+
+・madoResize.exe
+  ウィンドウリサイズ
+
+・dsfrc_pipe.exe
+  Bluesky Frame Rate Converter 対応
+
+・dshowCap.exe
+  外部キャプチャ
+
+・dvdmenu.exe
+  DVD メニュー表示
+
+・keyUI.exe
+  キーバインド設定
+
+■ Related combinations / generated files
+・dshow_cmd_launch.lua / dshowCap.exe / dshow_cmd_launch.conf
+  外部キャプチャ関連
+  以下のファイルを生成:
+  _dshow_fmt_video.cmd
+  _dshow_launch.cmd
+  _dshow_list_audio.cmd
+  _dshow_list_video.cmd
+
+・dvdmenu.exe / dvdmenu_return.lua
+  DVD メニュー表示関連
+  dvdmenu_return.lua は自動生成される
