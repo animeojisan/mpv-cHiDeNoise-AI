@@ -1,0 +1,18 @@
+【mpv_temporalfix.py について】
+
+mpv_temporalfix.py は pifroggi/vs_temporalfix をベースにした改変版です。
+
+本リポジトリ / 配布構成では、以下の DLL を `vs-plugins` フォルダに配置しています。
+
+・retinex.dll
+・tcanny.dll
+・libmotionmask.dll
+・libfillborders.dll
+・zsmooth.dll
+・vszip.dll
+
+また、mpv_temporalfix.py は `mpv.exe` と同じ場所に配置して使用しています。
+
+※ 必要な外部プラグインや DLL の取り扱いについては、
+元プロジェクトや各配布元の条件もあわせて確認してください。
+※ 参考元・出所整理については NOTICE.txt を参照してください。
