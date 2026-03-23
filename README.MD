@@ -1,6 +1,6 @@
 mpv-cHiDeNoise-AI
 ---
-onnxを使用したAIアップスケーリング、Anime4KなどのGLSLシェーダー、vapoursynthフィルターなど多種多様なツールを搭載。リアルタイム処理で高画質な再生を楽しめるmpvベースのAI再生プレーヤーです。（windows11）
+onnxを使用したAIアップスケーリング、フレーム補間、Anime4KなどのGLSLシェーダー、vapoursynthフィルターなど多種多様なツールを搭載。リアルタイム処理で高画質な再生を楽しめるmpvベースのAI再生プレーヤーです。（windows11）
 
 「mpv-cHiDeNoise-AI」関連の自作ファイルや編集済みファイルを GitHub で管理していくための個人用リポジトリになります。
 
