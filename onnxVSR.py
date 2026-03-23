@@ -1,3 +1,14 @@
+# onnxVSR.py
+#
+# 主な参考元・ベースの一部:
+# hooke007/mpv_PlayKit
+# https://github.com/hooke007/mpv_PlayKit
+#
+# 関連するツール、スクリプト、設定を公開・共有してくださった
+# hooke007 さんおよび各制作者・貢献者の方々に敬意と感謝を表します。
+#
+# This file contains project-specific adjustments and modifications.
+# See NOTICE.txt for credits, references, and provenance notes.
 
 """
 onnxVSR.py - DirectML / TensorRT ONNX wrapper for mpv/VapourSynth use.
