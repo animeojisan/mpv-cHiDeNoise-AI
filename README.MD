@@ -1,5 +1,5 @@
 mpv-cHiDeNoise-AI
-
+---
 mpvベースのAI再生プレーヤー「mpv-cHiDeNoise-AI」関連の
 自作ファイルや編集済みファイルを GitHub で管理していくための個人用リポジトリです。
 
