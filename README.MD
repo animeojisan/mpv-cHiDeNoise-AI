@@ -22,4 +22,5 @@ mpvベースのAI再生プレーヤー「mpv-cHiDeNoise-AI」関連の
 一般的な要望、サポート、ディスカッションには対応していません。
 
 スペシャルサンクス：参考文献
+---
 - [vs_temporalfix (pifroggi)](https://github.com/pifroggi/vs_temporalfix)
