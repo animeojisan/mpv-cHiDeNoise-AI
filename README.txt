@@ -23,6 +23,8 @@ mpv-cHiDeNoise-AI_GitHub
 必要な整理も進めていきたいと考えています。
 
 ライセンス・参考元・出所整理については NOTICE.txt を参照してください。
+mpv_PlayKit 由来ファイルに関する上流ライセンス情報は UPSTREAM_LICENSES.txt を参照してください。
+Python 系第三者コンポーネントに関するライセンス情報は THIRD_PARTY_LICENSES_python.txt を参照してください。
 
 
 【主な管理対象】
