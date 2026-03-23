@@ -20,3 +20,6 @@ mpvベースのAI再生プレーヤー「mpv-cHiDeNoise-AI」関連の
 
 また、本リポジトリは個人のペースで管理・更新しています。
 一般的な要望、サポート、ディスカッションには対応していません。
+
+スペシャルサンクス：参考文献
+- [pifroggi/vs_temporalfix](https://github.com/pifroggi/vs_temporalfix)
