@@ -6,7 +6,8 @@ NOTICE
 ・現在出所やライセンスを整理中のファイル
 
 主な参考元・ベース:
-・hooke007/mpv_PlayKit
+・mpv_PlayKit by hooke007
+  https://github.com/hooke007/mpv_PlayKit
 
 本リポジトリで参考・流用・改変の対象となった各種プロジェクト、
 スクリプト、ツールの制作者・貢献者の方々に敬意と感謝を表します。
