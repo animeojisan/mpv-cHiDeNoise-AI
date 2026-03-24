@@ -21,6 +21,9 @@
 # Based on plugins and functions from many different people.
 # See function comments and readme requirements for details.
 
+# 関連するツール、スクリプト、設定を公開・共有してくださった
+# pifroggi さんおよび各制作者・貢献者の方々に敬意と感謝を表します。
+
 import vapoursynth as vs
 
 core = vs.core
