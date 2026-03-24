@@ -2,7 +2,7 @@ mpv-cHiDeNoise-AI
 ---
 onnxを使用したAIアップスケーリング、フレーム補間、Anime4KなどのGLSLシェーダー、vapoursynthフィルターなど多種多様なツールを搭載。リアルタイム処理で高画質な再生を楽しめるmpv（[mpv-lazy](https://github.com/hooke007/mpv_PlayKit)）ベースの派生版AI再生プレーヤーです。（windows11）
 
-独自のウィンドウキャプチャ/外部入力キャプチャ機能、VSRのonnx対応などにより様々な映像ソースが高画質で視聴可能になります。
+独自のウィンドウキャプチャ/[外部入力キャプチャ機能](https://youtu.be/Cnx0tj_a4UQ?si=720YPOgsZ9lfGc9s)、VSRのonnx対応などにより様々な映像ソースが高画質で視聴可能になります。
 
 「mpv-cHiDeNoise-AI」関連の自作ファイルや編集済みファイルを GitHub で管理していくための個人用リポジトリになります。
 
