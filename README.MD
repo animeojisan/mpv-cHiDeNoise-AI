@@ -1,6 +1,6 @@
 mpv-cHiDeNoise-AI
 ---
-リアルタイム処理で高画質な再生を楽しめるmpv（[mpv-lazy](https://github.com/hooke007/mpv_PlayKit)）ベースの派生版AI再生プレーヤーです。（windows11用）
+リアルタイム処理で高画質な動画再生が楽しめるmpv（[mpv-lazy](https://github.com/hooke007/mpv_PlayKit)）ベースの派生版AI再生プレーヤーです。（windows11用）
 
 onnxを使用したAIアップスケーリング、フレーム補間、Anime4KなどのGLSLシェーダー、vapoursynthフィルターなど多種多様なツールを搭載。
 
