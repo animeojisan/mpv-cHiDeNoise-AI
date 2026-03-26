@@ -10,31 +10,19 @@
 # This file contains project-specific adjustments and modifications.
 # See NOTICE.txt for credits, references, and provenance notes.
 
-"""
-onnxVSR.py - DirectML / TensorRT ONNX wrapper for mpv/VapourSynth use.
-
-This revision adds:
-- explicit DML / TRT model-path resolution
-- file logging to portable_config/cache/onnxvsr_debug.log
-- temporal packed-input VSR_DML / VSR_TRT for TSPAN-like ONNX exports
-- clear backend-entry diagnostics so silent "no engine build" cases are easier to debug
-"""
-
 import os
 import re
-import typing
-
 import vapoursynth as vs
 
 core = vs.core
 
-__version__ = "0.3.0"
+__version__ = "0.4.0-filelog"
 __all__ = [
-    "UAI_DML", "UAI_TRT",
-    "VSR_DML", "VSR_TRT",
-    "UAI", "VSR",
-    "ONNX_INFO", "ONNX_ANZ",
-    "resolve_model_path", "resolve_model_path_ort", "resolve_model_path_trt",
+    "UAI_DML",
+    "VSR_DML",
+    "ONNX_INFO",
+    "ONNX_ANZ",
+    "resolve_model_path",
     "supports_temporal_input",
 ]
 
@@ -97,7 +85,13 @@ class LooseVersion(Version):
             other = LooseVersion(other)
         elif not isinstance(other, LooseVersion):
             return NotImplemented
-        return (self.version > other.version) - (self.version < other.version)
+        if self.version == other.version:
+            return 0
+        if self.version < other.version:
+            return -1
+        if self.version > other.version:
+            return 1
+        return 0
 
 
 vs_thd_init = os.cpu_count() or 8
@@ -107,7 +101,7 @@ elif vs_thd_init > 16:
     if vs_thd_init <= 32:
         vs_thd_dft = vs_thd_init // 2
         if vs_thd_dft % 2 != 0:
-            vs_thd_dft = vs_thd_dft - 1
+            vs_thd_dft -= 1
     else:
         vs_thd_dft = 16
 else:
@@ -121,41 +115,50 @@ vsmlrt = None
 onnx = None
 
 
-def _debug_log_path() -> str:
-    candidates = []
+def _append_log_line(path: str, line: str) -> None:
     try:
-        cwd = os.getcwd()
-        candidates.append(os.path.join(cwd, "portable_config", "cache", "onnxvsr_debug.log"))
-        candidates.append(os.path.join(cwd, "cache", "onnxvsr_debug.log"))
-    except Exception:
-        pass
-
-    try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        candidates.append(os.path.join(here, "portable_config", "cache", "onnxvsr_debug.log"))
-        candidates.append(os.path.join(os.path.dirname(here), "portable_config", "cache", "onnxvsr_debug.log"))
-        candidates.append(os.path.join(here, "cache", "onnxvsr_debug.log"))
-    except Exception:
-        pass
-
-    for path in candidates:
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            return path
-        except Exception:
-            continue
-    return os.path.abspath("onnxvsr_debug.log")
-
-
-def _log(msg: str, enabled: bool = True) -> None:
-    if not enabled:
-        return
-    line = f"[onnxVSR] {msg}"
-    try:
-        with open(_debug_log_path(), "a", encoding="utf-8") as f:
+        log_dir = os.path.dirname(path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(path, "a", encoding="utf-8", errors="ignore") as f:
             f.write(line + "\n")
     except Exception:
         pass
+
+
+def _default_log_path() -> str:
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = "."
+
+    candidates = []
+    try:
+        candidates.append(os.path.join(cwd, "portable_config", "cache", "onnxvsr_debug.log"))
+        candidates.append(os.path.join(cwd, "cache", "onnxvsr_debug.log"))
+        candidates.append(os.path.join(cwd, "onnxvsr_debug.log"))
+    except Exception:
+        pass
+
+    for cand in candidates:
+        try:
+            parent = os.path.dirname(cand)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            return cand
+        except Exception:
+            continue
+
+    return "onnxvsr_debug.log"
+
+
+def _log(enabled: bool, msg: str, log_file: str = None) -> None:
+    if not enabled:
+        return
+    line = f"[onnxVSR] {msg}"
+    print(line)
+    _append_log_line(log_file or _default_log_path(), line)
+
 
 
 def _require_ort_plugin(func_name: str) -> None:
@@ -163,66 +166,39 @@ def _require_ort_plugin(func_name: str) -> None:
         raise ModuleNotFoundError(f"{func_name}: missing plugin 'ort' (vs-onnxruntime / DirectML plugin)")
 
 
-def _require_trt_plugin(func_name: str) -> str:
-    if hasattr(core, "trt"):
-        return "trt"
-    raise ModuleNotFoundError(f"{func_name}: missing plugin 'trt' (vsmlrt-cuda / TensorRT plugin)")
-
-
 def _require_akarin(func_name: str) -> None:
     if not hasattr(core, "akarin"):
         raise ModuleNotFoundError(f"{func_name}: clamp=True requires plugin 'akarin'")
 
 
-def _plugin_dir_from_attr(attr: str) -> str:
-    obj = getattr(core, attr)
-    return os.path.dirname(obj.Version()["path"]).decode()
-
-
-def resolve_model_path_ort(model_pth: str) -> str:
+def resolve_model_path(model_pth: str) -> str:
     if not isinstance(model_pth, str) or len(model_pth) <= 3:
-        raise vs.Error("resolve_model_path_ort: invalid model_pth")
-    _require_ort_plugin("resolve_model_path_ort")
-    plg_dir = _plugin_dir_from_attr("ort")
+        raise vs.Error("resolve_model_path: invalid model_pth")
+
+    _require_ort_plugin("resolve_model_path")
+    plg_dir = os.path.dirname(core.ort.Version()["path"]).decode()
     mdl_pth_rel = os.path.join(plg_dir, "models", model_pth)
+
     if os.path.exists(mdl_pth_rel):
         return mdl_pth_rel
     if os.path.exists(model_pth):
         return model_pth
-    raise vs.Error(f"resolve_model_path_ort: model not found: {model_pth}")
 
-
-def resolve_model_path_trt(model_pth: str) -> str:
-    if not isinstance(model_pth, str) or len(model_pth) <= 3:
-        raise vs.Error("resolve_model_path_trt: invalid model_pth")
-    _require_trt_plugin("resolve_model_path_trt")
-    plg_dir = _plugin_dir_from_attr("trt")
-    mdl_pth_rel = os.path.join(plg_dir, "models", model_pth)
-    if os.path.exists(mdl_pth_rel):
-        return mdl_pth_rel
-    if os.path.exists(model_pth):
-        return model_pth
-    raise vs.Error(f"resolve_model_path_trt: model not found: {model_pth}")
-
-
-def resolve_model_path(model_pth: str, backend: str = "dml") -> str:
-    backend = (backend or "dml").lower()
-    if backend == "dml":
-        return resolve_model_path_ort(model_pth)
-    if backend == "trt":
-        return resolve_model_path_trt(model_pth)
-    raise vs.Error(f"resolve_model_path: unsupported backend={backend}")
+    raise vs.Error(f"resolve_model_path: model not found: {model_pth}")
 
 
 def _load_onnx():
     global onnx
     if onnx is None:
-        import onnx as _onnx
+        try:
+            import onnx as _onnx
+        except ImportError as exc:
+            raise ImportError("ONNX_INFO: missing Python package 'onnx'") from exc
         onnx = _onnx
     return onnx
 
 
-def ONNX_INFO(input: str = "", check_mdl: bool = False) -> dict:
+def ONNX_INFO(input: str = "", check_mdl: bool = True) -> dict:
     func_name = "ONNX_INFO"
     if not isinstance(input, str) or not input:
         raise vs.Error(f"{func_name}: invalid input path")
@@ -234,9 +210,9 @@ def ONNX_INFO(input: str = "", check_mdl: bool = False) -> dict:
         try:
             _onnx.checker.check_model(input)
         except ValidationError as e:
-            _log(f"{func_name}: invalid model warning: {e}", True)
+            print(f"{func_name}: invalid model warning: {e}")
         except Exception as e:
-            _log(f"{func_name}: check warning: {e}", True)
+            print(f"{func_name}: check warning: {e}")
 
     model = _onnx.load(input)
     graph_input = model.graph.input[0]
@@ -252,61 +228,161 @@ def ONNX_INFO(input: str = "", check_mdl: bool = False) -> dict:
         else:
             dims.append(None)
 
+    outputs = []
+    for out in model.graph.output:
+        odims = []
+        for dim in out.type.tensor_type.shape.dim:
+            if dim.HasField("dim_value"):
+                odims.append(dim.dim_value)
+            elif dim.HasField("dim_param"):
+                odims.append(dim.dim_param)
+            else:
+                odims.append(None)
+        outputs.append({"name": out.name, "dims": odims})
+
     return {
         "elem_type": elem_type,
         "rank": len(dims),
         "dims": dims,
         "input_name": graph_input.name,
+        "outputs": outputs,
     }
 
 
 ONNX_ANZ = ONNX_INFO
 
 
-def supports_temporal_input(model_pth: str, backend: str = "dml") -> bool:
-    info = ONNX_INFO(resolve_model_path(model_pth, backend=backend))
-    dims = info["dims"]
-    return info["rank"] >= 5 or (info["rank"] == 4 and isinstance(dims[1], int) and dims[1] > 3 and dims[1] % 3 == 0)
+def supports_temporal_input(model_pth: str) -> bool:
+    info = ONNX_INFO(model_pth)
+    if info["rank"] >= 5:
+        return True
+    if info["rank"] == 4:
+        cdim = info["dims"][1]
+        if isinstance(cdim, int) and cdim >= 6 and cdim % 3 == 0:
+            return True
+    return False
 
 
-def _load_vsmlrt(func_name: str, need_trt: bool = False):
+def _load_vsmlrt(func_name: str):
     global vsmlrt
     if vsmlrt is None:
-        import vsmlrt as _vsmlrt
+        try:
+            import vsmlrt as _vsmlrt
+        except ImportError as exc:
+            raise ImportError(f"{func_name}: missing script 'vsmlrt'") from exc
         vsmlrt = _vsmlrt
 
-    min_ver = "3.18.1" if need_trt else "3.15.25"
-    if LooseVersion(vsmlrt.__version__) < LooseVersion(min_ver):
-        raise ImportError(f"{func_name}: vsmlrt is too old; need >= {min_ver}")
+    if LooseVersion(vsmlrt.__version__) < LooseVersion("3.15.25"):
+        raise ImportError(f"{func_name}: vsmlrt is too old; need >= 3.15.25")
+
     return vsmlrt
 
 
-def _shift_clip_edge(clip: vs.VideoNode, offset: int) -> vs.VideoNode:
+def _repeat_frame(clip: vs.VideoNode, index: int, count: int) -> vs.VideoNode:
+    if count <= 0:
+        return None
+    frame = core.std.Trim(clip, first=index, last=index)
+    return core.std.Loop(frame, times=count)
+
+
+def _shift_with_edge_pad(clip: vs.VideoNode, offset: int) -> vs.VideoNode:
     if offset == 0:
         return clip
-    n = clip.num_frames
-    if n <= 1:
+    if clip.num_frames <= 1:
         return clip
     if offset < 0:
-        k = min(-offset, n - 1)
-        head = core.std.Trim(clip, 0, 0) * k
-        body = core.std.Trim(clip, 0, n - k - 1)
+        pad = -offset
+        head = _repeat_frame(clip, 0, pad)
+        body = core.std.Trim(clip, first=0, last=clip.num_frames - pad - 1)
         return head + body
-    k = min(offset, n - 1)
-    body = core.std.Trim(clip, k, n - 1)
-    tail = core.std.Trim(clip, n - 1, n - 1) * k
+    pad = offset
+    body = core.std.Trim(clip, first=pad, last=clip.num_frames - 1)
+    tail = _repeat_frame(clip, clip.num_frames - 1, pad)
     return body + tail
 
 
-def _split_rgb_planes(clip: vs.VideoNode) -> typing.List[vs.VideoNode]:
-    return [
-        core.std.ShufflePlanes(clip, 0, vs.GRAY),
-        core.std.ShufflePlanes(clip, 1, vs.GRAY),
-        core.std.ShufflePlanes(clip, 2, vs.GRAY),
-    ]
+def _split_rgb_planes(clip: vs.VideoNode):
+    return [core.std.ShufflePlanes(clip, planes=p, colorfamily=vs.GRAY) for p in (0, 1, 2)]
 
 
-def _validate_common(func_name: str, input, clamp, model_pth, fp16_qnt, gpu, gpu_t, vs_t):
+
+
+def _crop_abs(clip: vs.VideoNode, width: int, height: int, left: int, top: int) -> vs.VideoNode:
+    return core.std.CropAbs(clip, width=width, height=height, left=left, top=top)
+
+
+def _reflect_pad_axis(clip: vs.VideoNode, before: int, after: int, horizontal: bool = True) -> vs.VideoNode:
+    if before < 0 or after < 0:
+        raise vs.Error("_reflect_pad_axis: before/after must be >= 0")
+    if before == 0 and after == 0:
+        return clip
+
+    w = clip.width
+    h = clip.height
+
+    def take_edge(amount: int, from_start: bool):
+        if amount <= 0:
+            return None
+        parts = []
+        remaining = amount
+        while remaining > 0:
+            chunk = min(remaining, w if horizontal else h)
+            if horizontal:
+                left = 0 if from_start else w - chunk
+                part = _crop_abs(clip, chunk, h, left, 0)
+                part = core.std.FlipHorizontal(part)
+            else:
+                top = 0 if from_start else h - chunk
+                part = _crop_abs(clip, w, chunk, 0, top)
+                part = core.std.FlipVertical(part)
+            parts.append(part)
+            remaining -= chunk
+        if horizontal:
+            return parts[0] if len(parts) == 1 else core.std.StackHorizontal(parts)
+        return parts[0] if len(parts) == 1 else core.std.StackVertical(parts)
+
+    left_or_top = take_edge(before, True)
+    right_or_bottom = take_edge(after, False)
+
+    if horizontal:
+        parts = [x for x in (left_or_top, clip, right_or_bottom) if x is not None]
+        return parts[0] if len(parts) == 1 else core.std.StackHorizontal(parts)
+    parts = [x for x in (left_or_top, clip, right_or_bottom) if x is not None]
+    return parts[0] if len(parts) == 1 else core.std.StackVertical(parts)
+
+
+def _reflect_pad(clip: vs.VideoNode, left: int, right: int, top: int, bottom: int) -> vs.VideoNode:
+    padded = _reflect_pad_axis(clip, left, right, horizontal=True)
+    padded = _reflect_pad_axis(padded, top, bottom, horizontal=False)
+    return padded
+
+
+def _compute_balanced_padding(size: int, multiple: int):
+    if multiple <= 0:
+        return 0, 0
+    target = ((size + multiple - 1) // multiple) * multiple
+    pad = max(0, target - size)
+    before = pad // 2
+    after = pad - before
+    return before, after
+
+
+def _center_crop(clip: vs.VideoNode, width: int, height: int, left: int, top: int) -> vs.VideoNode:
+    return core.std.CropAbs(clip, width=width, height=height, left=left, top=top)
+
+def UAI_DML(
+    input: vs.VideoNode,
+    clamp: bool = False,
+    model_pth: str = "",
+    fp16_qnt: bool = True,
+    gpu: int = 0,
+    gpu_t: int = 2,
+    vs_t: int = vs_thd_dft,
+    log: bool = False,
+    log_file: str = None,
+) -> vs.VideoNode:
+    func_name = "UAI_DML"
+
     if not isinstance(input, vs.VideoNode):
         raise vs.Error(f"{func_name}: invalid input")
     if not isinstance(clamp, bool):
@@ -322,266 +398,50 @@ def _validate_common(func_name: str, input, clamp, model_pth, fp16_qnt, gpu, gpu
     if not isinstance(vs_t, int) or vs_t <= 0 or vs_t > vs_thd_init:
         raise vs.Error(f"{func_name}: invalid vs_t")
 
-
-def _input_precision_to_bool(elem_type: int, func_name: str) -> bool:
-    if elem_type == 1:
-        return False
-    if elem_type == 10:
-        return True
-    raise vs.Error(f"{func_name}: unsupported model input precision ({elem_type})")
-
-
-def _prepare_rgb(input: vs.VideoNode, fp16_qnt: bool, clamp: bool) -> vs.VideoNode:
-    clip = core.resize.Bilinear(
-        clip=input,
-        format=vs.RGBH if fp16_qnt else vs.RGBS,
-        matrix_in_s="709",
-    )
-    if clamp:
-        clip = core.akarin.Expr(clips=clip, expr="x 0 1 clamp")
-    return clip
-
-
-def _make_dml_backend(_vsmlrt, gpu: int, gpu_t: int, fp16_qnt: bool):
-    return _vsmlrt.BackendV2.ORT_DML(
-        device_id=gpu,
-        num_streams=gpu_t,
-        fp16=fp16_qnt,
-    )
-
-
-def _make_trt_backend(
-    _vsmlrt,
-    gpu: int,
-    gpu_t: int,
-    fp16_qnt: bool,
-    opt_lv: int,
-    cuda_opt: typing.List[int],
-    int8_qnt: bool,
-    st_eng: bool,
-    res_opt: typing.Optional[typing.List[int]],
-    res_max: typing.Optional[typing.List[int]],
-    ws_size: int,
-):
-    if opt_lv not in [0, 1, 2, 3, 4, 5]:
-        raise vs.Error("TRT: invalid opt_lv")
-    if not (isinstance(cuda_opt, list) and len(cuda_opt) == 3 and all(isinstance(num, int) and num in [0, 1] for num in cuda_opt)):
-        raise vs.Error("TRT: invalid cuda_opt")
-    if not isinstance(int8_qnt, bool):
-        raise vs.Error("TRT: invalid int8_qnt")
-    if not isinstance(st_eng, bool):
-        raise vs.Error("TRT: invalid st_eng")
-    if not st_eng:
-        if not (isinstance(res_opt, list) and len(res_opt) == 2 and all(isinstance(i, int) for i in res_opt)):
-            raise vs.Error("TRT: invalid res_opt")
-        if not (isinstance(res_max, list) and len(res_max) == 2 and all(isinstance(i, int) for i in res_max)):
-            raise vs.Error("TRT: invalid res_max")
-    if not isinstance(ws_size, int) or ws_size < 0:
-        raise vs.Error("TRT: invalid ws_size")
-
-    nv1, nv2, nv3 = [bool(num) for num in cuda_opt]
-    if int8_qnt:
-        fp16_qnt = True
-
-    return _vsmlrt.BackendV2.TRT(
-        builder_optimization_level=opt_lv,
-        short_path=True,
-        device_id=gpu,
-        num_streams=gpu_t,
-        use_cuda_graph=nv1,
-        use_cublas=nv2,
-        use_cudnn=nv3,
-        int8=int8_qnt,
-        fp16=fp16_qnt,
-        tf32=False if fp16_qnt else True,
-        output_format=1 if fp16_qnt else 0,
-        workspace=None if ws_size < 128 else (ws_size if st_eng else ws_size * 2),
-        static_shape=st_eng,
-        min_shapes=[0, 0] if st_eng else [384, 384],
-        opt_shapes=None if st_eng else res_opt,
-        max_shapes=None if st_eng else res_max,
-    )
-
-
-def _restore_output(infer: vs.VideoNode, fmt_in: int, colorlv: int) -> vs.VideoNode:
-    return core.resize.Bilinear(
-        clip=infer,
-        format=fmt_in,
-        matrix_s="709",
-        range=1 if colorlv == 0 else None,
-    )
-
-
-def UAI_DML(
-    input: vs.VideoNode,
-    clamp: bool = False,
-    model_pth: str = "",
-    fp16_qnt: bool = True,
-    gpu: int = 0,
-    gpu_t: int = 2,
-    vs_t: int = vs_thd_dft,
-    log: bool = True,
-) -> vs.VideoNode:
-    func_name = "UAI_DML"
-    _validate_common(func_name, input, clamp, model_pth, fp16_qnt, gpu, gpu_t, vs_t)
     _require_ort_plugin(func_name)
     if clamp:
         _require_akarin(func_name)
 
-    mdl_pth = resolve_model_path_ort(model_pth)
+    mdl_pth = resolve_model_path(model_pth)
     model_info = ONNX_INFO(mdl_pth)
-    _log(f"{func_name}: model={mdl_pth}", log)
-    _log(f"{func_name}: input_name={model_info['input_name']} dims={model_info['dims']} elem_type={model_info['elem_type']}", log)
+    _log(log, f"{func_name}: model={mdl_pth}", log_file)
+    _log(log, f"{func_name}: input_name={model_info['input_name']} dims={model_info['dims']} elem_type={model_info['elem_type']}", log_file)
+    _log(log, f"{func_name}: backend=ORT_DML gpu={gpu} streams={gpu_t} vs_threads={vs_t}", log_file)
+    _log(log, f"{func_name}: clip_in={input.width}x{input.height} frames={input.num_frames}", log_file)
 
-    if model_info["rank"] >= 5 or (model_info["rank"] == 4 and isinstance(model_info["dims"][1], int) and model_info["dims"][1] > 3):
-        raise vs.Error(f"{func_name}: temporal/VSR model detected; use VSR_DML() instead")
+    if model_info["rank"] >= 5:
+        raise vs.Error(
+            f"{func_name}: temporal/VSR model detected (rank={model_info['rank']}). Use VSR_DML() instead."
+        )
 
-    _vsmlrt = _load_vsmlrt(func_name, need_trt=False)
+    _vsmlrt = _load_vsmlrt(func_name)
 
     core.num_threads = vs_t
     fmt_in = input.format.id
     colorlv = getattr(input.get_frame(0).props, "_ColorRange", 0)
-    fp16_mdl = _input_precision_to_bool(model_info["elem_type"], func_name)
-    if fp16_mdl:
-        fp16_qnt = True
 
-    clip = _prepare_rgb(input, fp16_qnt, clamp)
-    be_param = _make_dml_backend(_vsmlrt, gpu, gpu_t, fp16_qnt)
-    _log(f"{func_name}: backend=ORT_DML gpu={gpu} streams={gpu_t} vs_threads={vs_t}", log)
-
-    infer = _vsmlrt.inference(clips=clip, network_path=mdl_pth, backend=be_param)
-    _log(f"{func_name}: inference submitted", log)
-    output = _restore_output(infer, fmt_in, colorlv)
-    _log(f"{func_name}: output={output.width}x{output.height}", log)
-    return output
-
-
-def UAI_TRT(
-    input: vs.VideoNode,
-    clamp: bool = False,
-    model_pth: str = "",
-    opt_lv: int = 3,
-    cuda_opt: typing.List[int] = [0, 0, 0],
-    int8_qnt: bool = False,
-    fp16_qnt: bool = True,
-    gpu: int = 0,
-    gpu_t: int = 2,
-    st_eng: bool = False,
-    res_opt: typing.Optional[typing.List[int]] = None,
-    res_max: typing.Optional[typing.List[int]] = None,
-    ws_size: int = 0,
-    vs_t: int = vs_thd_dft,
-    log: bool = True,
-) -> vs.VideoNode:
-    func_name = "UAI_TRT"
-    _validate_common(func_name, input, clamp, model_pth, fp16_qnt, gpu, gpu_t, vs_t)
-    _require_trt_plugin(func_name)
-    if clamp:
-        _require_akarin(func_name)
-
-    mdl_pth = resolve_model_path_trt(model_pth)
-    model_info = ONNX_INFO(mdl_pth)
-    _log(f"{func_name}: ENTER", log)
-    _log(f"{func_name}: model={mdl_pth}", log)
-    _log(f"{func_name}: input_name={model_info['input_name']} dims={model_info['dims']} elem_type={model_info['elem_type']}", log)
-
-    if model_info["rank"] >= 5 or (model_info["rank"] == 4 and isinstance(model_info["dims"][1], int) and model_info["dims"][1] > 3):
-        raise vs.Error(f"{func_name}: temporal/VSR model detected; use VSR_TRT() instead")
-
-    _vsmlrt = _load_vsmlrt(func_name, need_trt=True)
-    _log(f"{func_name}: vsmlrt={_vsmlrt.__version__}", log)
-    _log(f"{func_name}: core.trt present=yes", log)
-
-    core.num_threads = vs_t
-    fmt_in = input.format.id
-    colorlv = getattr(input.get_frame(0).props, "_ColorRange", 0)
-    fp16_mdl = _input_precision_to_bool(model_info["elem_type"], func_name)
-    if fp16_mdl:
-        fp16_qnt = True
-
-    clip = _prepare_rgb(input, fp16_qnt, clamp)
-    be_param = _make_trt_backend(_vsmlrt, gpu, gpu_t, fp16_qnt, opt_lv, cuda_opt, int8_qnt, st_eng, res_opt, res_max, ws_size)
-    _log(f"{func_name}: backend=TRT gpu={gpu} streams={gpu_t} static_shape={st_eng} res_opt={res_opt} res_max={res_max}", log)
-
-    infer = _vsmlrt.inference(clips=clip, network_path=mdl_pth, backend=be_param)
-    _log(f"{func_name}: inference submitted", log)
-    output = _restore_output(infer, fmt_in, colorlv)
-    _log(f"{func_name}: output={output.width}x{output.height}", log)
-    return output
-
-
-def _vsr_impl(
-    func_name: str,
-    backend: str,
-    input: vs.VideoNode,
-    clamp: bool,
-    model_pth: str,
-    fp16_qnt: bool,
-    gpu: int,
-    gpu_t: int,
-    vs_t: int,
-    log: bool,
-    opt_lv: int = 3,
-    cuda_opt: typing.List[int] = [0, 0, 0],
-    int8_qnt: bool = False,
-    st_eng: bool = False,
-    res_opt: typing.Optional[typing.List[int]] = None,
-    res_max: typing.Optional[typing.List[int]] = None,
-    ws_size: int = 0,
-) -> vs.VideoNode:
-    _validate_common(func_name, input, clamp, model_pth, fp16_qnt, gpu, gpu_t, vs_t)
-    if backend == "dml":
-        _require_ort_plugin(func_name)
-        need_trt = False
-        mdl_pth = resolve_model_path_ort(model_pth)
+    elem_type = model_info["elem_type"]
+    if elem_type == 1:
+        fp16_mdl = False
+    elif elem_type == 10:
+        fp16_mdl = True
     else:
-        _require_trt_plugin(func_name)
-        need_trt = True
-        mdl_pth = resolve_model_path_trt(model_pth)
-    if clamp:
-        _require_akarin(func_name)
+        raise vs.Error(f"{func_name}: unsupported model input precision ({elem_type})")
 
-    model_info = ONNX_INFO(mdl_pth)
-    _log(f"{func_name}: ENTER backend={backend}", log)
-    _log(f"{func_name}: model={mdl_pth}", log)
-    _log(f"{func_name}: input_name={model_info['input_name']} dims={model_info['dims']} elem_type={model_info['elem_type']}", log)
-
-    dims = model_info["dims"]
-    if model_info["rank"] != 4 or not isinstance(dims[1], int) or dims[1] <= 3 or dims[1] % 3 != 0:
-        raise vs.Error(f"{func_name}: unsupported temporal ONNX input shape {dims}; expected packed 4D with channels = frames*3")
-
-    num_frames = dims[1] // 3
-    radius = num_frames // 2
-    _log(f"{func_name}: inferred temporal frames={num_frames} radius={radius}", log)
-
-    _vsmlrt = _load_vsmlrt(func_name, need_trt=need_trt)
-    core.num_threads = vs_t
-    fmt_in = input.format.id
-    colorlv = getattr(input.get_frame(0).props, "_ColorRange", 0)
-    fp16_mdl = _input_precision_to_bool(model_info["elem_type"], func_name)
     if fp16_mdl:
         fp16_qnt = True
 
-    clip = _prepare_rgb(input, fp16_qnt, clamp)
-    _log(f"{func_name}: clip_in={input.width}x{input.height} frames={input.num_frames}", log)
+    clip = core.resize.Bilinear(input, format=vs.RGBH if fp16_qnt else vs.RGBS, matrix_in_s="709")
 
-    packed_inputs = []
-    for off in range(-radius, radius + 1):
-        shifted = _shift_clip_edge(clip, off)
-        packed_inputs.extend(_split_rgb_planes(shifted))
-    _log(f"{func_name}: packed_inputs={len(packed_inputs)} (expected={num_frames * 3})", log)
+    if clamp:
+        clip = core.akarin.Expr(clips=clip, expr="x 0 1 clamp")
 
-    if backend == "dml":
-        be_param = _make_dml_backend(_vsmlrt, gpu, gpu_t, fp16_qnt)
-        _log(f"{func_name}: backend=ORT_DML gpu={gpu} streams={gpu_t} vs_threads={vs_t}", log)
-    else:
-        be_param = _make_trt_backend(_vsmlrt, gpu, gpu_t, fp16_qnt, opt_lv, cuda_opt, int8_qnt, st_eng, res_opt, res_max, ws_size)
-        _log(f"{func_name}: backend=TRT gpu={gpu} streams={gpu_t} static_shape={st_eng} res_opt={res_opt} res_max={res_max} vs_threads={vs_t}", log)
+    be_param = _vsmlrt.BackendV2.ORT_DML(device_id=gpu, num_streams=gpu_t, fp16=fp16_qnt)
+    infer = _vsmlrt.inference(clips=clip, network_path=mdl_pth, backend=be_param, input_name=model_info["input_name"])
+    _log(log, f"{func_name}: inference submitted", log_file)
 
-    infer = _vsmlrt.inference(clips=packed_inputs, network_path=mdl_pth, backend=be_param)
-    _log(f"{func_name}: inference submitted", log)
-    output = _restore_output(infer, fmt_in, colorlv)
-    _log(f"{func_name}: output={output.width}x{output.height}", log)
+    output = core.resize.Bilinear(infer, format=fmt_in, matrix_s="709", range=1 if colorlv == 0 else None)
+    _log(log, f"{func_name}: output={output.width}x{output.height}", log_file)
     return output
 
 
@@ -593,46 +453,108 @@ def VSR_DML(
     gpu: int = 0,
     gpu_t: int = 2,
     vs_t: int = vs_thd_dft,
-    log: bool = True,
+    log: bool = False,
+    log_file: str = None,
+    pad_mode: str = "none",
+    pad_multiple: int = 0,
+    crop_output: bool = True,
 ) -> vs.VideoNode:
-    return _vsr_impl("VSR_DML", "dml", input, clamp, model_pth, fp16_qnt, gpu, gpu_t, vs_t, log)
+    func_name = "VSR_DML"
 
+    if not isinstance(input, vs.VideoNode):
+        raise vs.Error(f"{func_name}: invalid input")
+    if not isinstance(model_pth, str) or len(model_pth) <= 3:
+        raise vs.Error(f"{func_name}: invalid model_pth")
+    if not isinstance(pad_mode, str) or pad_mode.lower() not in ("none", "reflect"):
+        raise vs.Error(f"{func_name}: pad_mode must be 'none' or 'reflect'")
+    if not isinstance(pad_multiple, int) or pad_multiple < 0:
+        raise vs.Error(f"{func_name}: pad_multiple must be >= 0")
+    if not isinstance(crop_output, bool):
+        raise vs.Error(f"{func_name}: crop_output must be bool")
+    pad_mode = pad_mode.lower()
 
-def VSR_TRT(
-    input: vs.VideoNode,
-    clamp: bool = False,
-    model_pth: str = "",
-    opt_lv: int = 3,
-    cuda_opt: typing.List[int] = [0, 0, 0],
-    int8_qnt: bool = False,
-    fp16_qnt: bool = True,
-    gpu: int = 0,
-    gpu_t: int = 2,
-    st_eng: bool = False,
-    res_opt: typing.Optional[typing.List[int]] = None,
-    res_max: typing.Optional[typing.List[int]] = None,
-    ws_size: int = 0,
-    vs_t: int = vs_thd_dft,
-    log: bool = True,
-) -> vs.VideoNode:
-    return _vsr_impl("VSR_TRT", "trt", input, clamp, model_pth, fp16_qnt, gpu, gpu_t, vs_t, log,
-                     opt_lv=opt_lv, cuda_opt=cuda_opt, int8_qnt=int8_qnt, st_eng=st_eng,
-                     res_opt=res_opt, res_max=res_max, ws_size=ws_size)
+    _require_ort_plugin(func_name)
+    if clamp:
+        _require_akarin(func_name)
 
+    mdl_pth = resolve_model_path(model_pth)
+    model_info = ONNX_INFO(mdl_pth)
+    _vsmlrt = _load_vsmlrt(func_name)
 
-def UAI(input: vs.VideoNode, backend: str = "dml", **kwargs) -> vs.VideoNode:
-    backend = (backend or "dml").lower()
-    if backend == "dml":
-        return UAI_DML(input, **kwargs)
-    if backend == "trt":
-        return UAI_TRT(input, **kwargs)
-    raise vs.Error(f"UAI: unsupported backend={backend}")
+    _log(log, f"{func_name}: model={mdl_pth}", log_file)
+    _log(log, f"{func_name}: input_name={model_info['input_name']} dims={model_info['dims']} elem_type={model_info['elem_type']}", log_file)
+    _log(log, f"{func_name}: backend=ORT_DML gpu={gpu} streams={gpu_t} vs_threads={vs_t}", log_file)
+    _log(log, f"{func_name}: clip_in={input.width}x{input.height} frames={input.num_frames}", log_file)
 
+    dims = model_info["dims"]
+    if model_info["rank"] != 4:
+        raise vs.Error(f"{func_name}: expected packed 4D ONNX input like [N, T*C, H, W], got rank={model_info['rank']}")
 
-def VSR(input: vs.VideoNode, backend: str = "dml", **kwargs) -> vs.VideoNode:
-    backend = (backend or "dml").lower()
-    if backend == "dml":
-        return VSR_DML(input, **kwargs)
-    if backend == "trt":
-        return VSR_TRT(input, **kwargs)
-    raise vs.Error(f"VSR: unsupported backend={backend}")
+    cdim = dims[1]
+    if not isinstance(cdim, int) or cdim < 6 or cdim % 3 != 0:
+        raise vs.Error(f"{func_name}: unsupported packed channel count: {cdim}")
+
+    num_frames = cdim // 3
+    radius = num_frames // 2
+    _log(log, f"{func_name}: inferred temporal frames={num_frames} radius={radius}", log_file)
+    _log(log, f"{func_name}: pad_mode={pad_mode} pad_multiple={pad_multiple} crop_output={crop_output}", log_file)
+
+    core.num_threads = vs_t
+    fmt_in = input.format.id
+    colorlv = getattr(input.get_frame(0).props, "_ColorRange", 0)
+
+    elem_type = model_info["elem_type"]
+    if elem_type == 1:
+        fp16_mdl = False
+    elif elem_type == 10:
+        fp16_mdl = True
+    else:
+        raise vs.Error(f"{func_name}: unsupported model input precision ({elem_type})")
+
+    if fp16_mdl:
+        fp16_qnt = True
+
+    clip = core.resize.Bilinear(input, format=vs.RGBH if fp16_qnt else vs.RGBS, matrix_in_s="709")
+    if clamp:
+        clip = core.akarin.Expr(clips=clip, expr="x 0 1 clamp")
+
+    pad_left = pad_right = pad_top = pad_bottom = 0
+    if pad_mode == "reflect" and pad_multiple > 1:
+        pad_left, pad_right = _compute_balanced_padding(clip.width, pad_multiple)
+        pad_top, pad_bottom = _compute_balanced_padding(clip.height, pad_multiple)
+        if pad_left or pad_right or pad_top or pad_bottom:
+            _log(log, f"{func_name}: applying reflect padding left={pad_left} right={pad_right} top={pad_top} bottom={pad_bottom}", log_file)
+            clip = _reflect_pad(clip, pad_left, pad_right, pad_top, pad_bottom)
+            _log(log, f"{func_name}: padded_clip={clip.width}x{clip.height}", log_file)
+
+    packed = []
+    for offset in range(-radius, radius + 1):
+        shifted = _shift_with_edge_pad(clip, offset)
+        packed.extend(_split_rgb_planes(shifted))
+
+    _log(log, f"{func_name}: packed_inputs={len(packed)} (expected={cdim})", log_file)
+
+    be_param = _vsmlrt.BackendV2.ORT_DML(device_id=gpu, num_streams=gpu_t, fp16=fp16_qnt)
+    infer = _vsmlrt.inference(
+        clips=packed,
+        network_path=mdl_pth,
+        backend=be_param,
+        input_name=model_info["input_name"],
+    )
+    _log(log, f"{func_name}: inference submitted", log_file)
+
+    if crop_output and (pad_left or pad_right or pad_top or pad_bottom):
+        scale_num_w = infer.width
+        scale_den_w = clip.width
+        scale_num_h = infer.height
+        scale_den_h = clip.height
+        crop_left = (pad_left * scale_num_w) // scale_den_w
+        crop_top = (pad_top * scale_num_h) // scale_den_h
+        out_w = (input.width * scale_num_w) // scale_den_w
+        out_h = (input.height * scale_num_h) // scale_den_h
+        _log(log, f"{func_name}: crop_output left={crop_left} top={crop_top} width={out_w} height={out_h}", log_file)
+        infer = _center_crop(infer, width=out_w, height=out_h, left=crop_left, top=crop_top)
+
+    output = core.resize.Bilinear(infer, format=fmt_in, matrix_s="709", range=1 if colorlv == 0 else None)
+    _log(log, f"{func_name}: output={output.width}x{output.height}", log_file)
+    return output
