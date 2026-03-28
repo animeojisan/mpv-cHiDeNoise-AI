@@ -91,6 +91,7 @@ struct Options {
     int  outH = 0;                 // 0 => auto (capture size)
     char outPath[MAX_PATH] = {};   // if empty -> stdout or mpv pipe
     char mpvPath[MAX_PATH] = {};   // if non-empty -> launch mpv and pipe
+    bool cursorEnabled = false;    // default off (keep old behavior)
 };
 
 // ---- 起動時に「自分以外の mpvCapGC_30_YUV.exe」を全部キルする ---------------
@@ -152,12 +153,17 @@ bool parse_args(int argc, char* argv[], Options& opt)
             const char* p = argv[++i];
             std::strncpy(opt.mpvPath, p, MAX_PATH - 1);
             opt.mpvPath[MAX_PATH - 1] = '\0';
+        } else if (std::strcmp(a, "--cursor") == 0) {
+            opt.cursorEnabled = true;
+        } else if (std::strcmp(a, "--no-cursor") == 0) {
+            opt.cursorEnabled = false;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             std::fprintf(stderr,
                 "Usage: mpvCapGC_30_YUV.exe [--hwnd 0x123456]\n"
                 "                             [--w 1280 --h 720]   (0 or omit => capture size)\n"
                 "                             [--out path]        (write raw YUV444 to file)\n"
                 "                             [--mpv \"C:/path/to/mpv.exe\"] (pipe into mpv)\n"
+                "                             [--cursor | --no-cursor]\n"
                 "\n"
                 "FPS is nominally 30 in this build (for mpv's rawvideo demuxer).\n"
                 "If --hwnd is omitted, the topmost non-mpv app window after 1 second will be captured,\n"
@@ -1086,7 +1092,7 @@ int main(int argc, char* argv[])
     }
 
     WGC::GraphicsCaptureSession session = framePool.CreateCaptureSession(item);
-    session.IsCursorCaptureEnabled(false);
+    session.IsCursorCaptureEnabled(opt.cursorEnabled);
 
     try {
         session.StartCapture();
