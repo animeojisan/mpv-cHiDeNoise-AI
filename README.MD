@@ -36,7 +36,6 @@ This repository is managed and updated at a personal pace. Support is not provid
 
 </details>
 
----
 
 mpv-cHiDeNoise-AI
 ---
