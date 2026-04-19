@@ -43,3 +43,18 @@ _通常协议已集成在文件内部_
 ## .../mpv-lazy/vapoursynth64/plugins
 
 参见 [对应维基页面](https://github.com/hooke007/mpv_PlayKit/wiki/2_portable_config#vs%E8%84%9A%E6%9C%AC%E8%B7%AF%E5%BE%84-)
+
+---
+
+## pifroggi/vs_temporalfix について
+
+以下のファイルは、pifroggi/vs_temporalfix をベースに本リポジトリ向けへ調整・改変したものです。
+
+- mpv_temporalfix.py
+- temporalfix2_xxx.vpy
+
+参照先:
+- Repository: https://github.com/pifroggi/vs_temporalfix
+
+ライセンスや再配布条件の確認にあたっては、ベース元リポジトリ側で示されている内容と、
+必要に応じて LICENSE / NOTICE / 各ファイル内コメントを確認してください。
