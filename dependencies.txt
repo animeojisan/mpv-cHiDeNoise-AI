@@ -19,3 +19,18 @@ mpv_temporalfix.py は pifroggi/vs_temporalfix をベースにした改変版で
 
 関連するツール、スクリプト、設定を公開・共有してくださった
 pifroggi さんおよび各制作者・貢献者の方々に敬意と感謝を表します。
+
+
+【ライセンス / 改変について】
+
+mpv_temporalfix.py および temporalfix2_xxx.vpy は、pifroggi/vs_temporalfix をベースに
+mpv での利用向けに調整・改変したものです。
+
+ベース元の vs_temporalfix は Apache License 2.0 で公開されています。
+再配布や改変を行う場合は、元ライセンスの条件に従い、
+ライセンス本文、著作権表示、必要な帰属表示や NOTICE の扱いを
+あわせて確認してください。
+
+本配布物では、オリジナルの設計・実装に敬意を表し、
+関連するツール、スクリプト、設定を公開・共有してくださった
+pifroggi さんおよび各制作者・貢献者の方々に感謝します。
