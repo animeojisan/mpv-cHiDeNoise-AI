@@ -929,21 +929,35 @@ static void ResetCurrentState() {
 
 static bool ConnectPipe(HANDLE& hPipe) {
     hPipe = INVALID_HANDLE_VALUE;
-    if (!WaitNamedPipeW(g_app.pipePath.c_str(), 250)) {
-        hPipe = CreateFileW(g_app.pipePath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-        return hPipe != INVALID_HANDLE_VALUE;
-    }
+    WaitNamedPipeW(g_app.pipePath.c_str(), 250);
+
     hPipe = CreateFileW(g_app.pipePath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+
+    // Another companion tool may briefly occupy the same mpv IPC pipe.
+    // Retry once so normal send operations do not fail just because the pipe was busy.
+    if (hPipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY) {
+        if (WaitNamedPipeW(g_app.pipePath.c_str(), 100)) {
+            hPipe = CreateFileW(g_app.pipePath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        }
+    }
+
     return hPipe != INVALID_HANDLE_VALUE;
 }
 
 static bool ProbePipeAlive() {
-    HANDLE hPipe = INVALID_HANDLE_VALUE;
-    if (!ConnectPipe(hPipe)) {
-        return false;
+    HANDLE hPipe = CreateFileW(g_app.pipePath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(hPipe);
+        return true;
     }
-    CloseHandle(hPipe);
-    return true;
+
+    if (GetLastError() == ERROR_PIPE_BUSY) {
+        // The pipe exists but is currently used by another tool.
+        // For auto-close monitoring, this means mpv is still alive.
+        return true;
+    }
+
+    return false;
 }
 
 static void CheckPipeAndCloseIfNeeded(HWND hwnd) {
@@ -955,7 +969,7 @@ static void CheckPipeAndCloseIfNeeded(HWND hwnd) {
     }
 
     ++g_app.pipeMissCount;
-    if (g_app.pipeMissCount >= 3) {
+    if (g_app.pipeMissCount >= 2) {
         KillTimer(hwnd, TIMER_APPLY);
         KillTimer(hwnd, TIMER_ANALYZER);
         KillTimer(hwnd, TIMER_PIPE_WATCH);
@@ -2369,7 +2383,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         ResolveConfigPaths();
         LoadStateFromJson(true);
         SetTimer(hwnd, TIMER_ANALYZER, 40, nullptr);
-        SetTimer(hwnd, TIMER_PIPE_WATCH, 1000, nullptr);
+        SetTimer(hwnd, TIMER_PIPE_WATCH, 250, nullptr);
         return 0;
 
     case WM_GETMINMAXINFO: {
