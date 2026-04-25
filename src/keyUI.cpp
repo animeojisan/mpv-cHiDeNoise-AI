@@ -43,6 +43,8 @@
 "publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 static const wchar_t* APP_TITLE_BASE = L"keyUI - mpv input.conf editor";
+static const wchar_t* APP_SINGLE_INSTANCE_MUTEX = L"Local\\keyUI_single_instance";
+static const wchar_t* APP_MAIN_CLASS = L"KEYUI_MAIN";
 
 static const int IDC_SEARCH_LABEL = 100;
 static const int IDC_SEARCH_EDIT  = 101;
@@ -1234,6 +1236,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
+    HANDLE hSingleInstanceMutex = CreateMutexW(nullptr, TRUE, APP_SINGLE_INSTANCE_MUTEX);
+    if (hSingleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existing = FindWindowW(APP_MAIN_CLASS, nullptr);
+        if (existing) {
+            if (IsIconic(existing)) {
+                ShowWindow(existing, SW_RESTORE);
+            }
+            SetForegroundWindow(existing);
+        }
+        CloseHandle(hSingleInstanceMutex);
+        return 0;
+    }
+
     gExeDir = get_exe_dir();
     gInputPath = join_path(gExeDir, L"portable_config\\input.conf");
 
@@ -1252,7 +1267,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
-    wc.lpszClassName = L"KEYUI_MAIN";
+    wc.lpszClassName = APP_MAIN_CLASS;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassW(&wc);
@@ -1273,5 +1288,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     if (gFont) { DeleteObject(gFont); gFont = nullptr; }
+    if (hSingleInstanceMutex) {
+        ReleaseMutex(hSingleInstanceMutex);
+        CloseHandle(hSingleInstanceMutex);
+    }
     return (int)msg.wParam;
 }
