@@ -36,8 +36,8 @@ constexpr wchar_t kSingleInstanceMutexName[] = L"Local\\MpvColorUiWindow_SingleI
 constexpr wchar_t kDefaultPipe[]     = L"\\\\.\\pipe\\mpv-tool";
 constexpr char kEqFilterLabel[]      = "@colorui_eq";
 constexpr char kHueFilterLabel[]     = "@colorui_hue";
-constexpr int kPipeMonitorIntervalMs = 1000;
-constexpr int kPipeMonitorMissLimit  = 3;
+constexpr int kPipeMonitorIntervalMs = 250;
+constexpr int kPipeMonitorMissLimit  = 2;
 constexpr UINT WMAPP_RESET_UI   = WM_APP + 100;
 
 struct SliderDef {
@@ -648,6 +648,21 @@ bool SendJsonLineToPipe(const std::wstring& pipeName, const std::string& jsonUtf
         0,
         nullptr);
 
+    // Another companion tool may briefly occupy the same mpv IPC pipe.
+    // Treat that as a transient busy state and retry once instead of failing immediately.
+    if (hPipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY) {
+        if (WaitNamedPipeW(pipeName.c_str(), 100)) {
+            hPipe = CreateFileW(
+                pipeName.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                nullptr,
+                OPEN_EXISTING,
+                0,
+                nullptr);
+        }
+    }
+
     if (hPipe == INVALID_HANDLE_VALUE) {
         const DWORD err = GetLastError();
         std::wostringstream oss;
@@ -693,7 +708,9 @@ bool IsPipeReachable(const wchar_t* pipeName)
 
     const DWORD err = GetLastError();
     if (err == ERROR_PIPE_BUSY) {
-        return WaitNamedPipeW(pipeName, 0) != FALSE;
+        // The pipe exists but is currently used by another tool.
+        // For auto-close monitoring, this means mpv is still alive.
+        return true;
     }
 
     return false;
