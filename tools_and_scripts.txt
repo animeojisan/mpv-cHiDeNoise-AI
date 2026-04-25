@@ -93,6 +93,16 @@ Tools and Scripts
 ・keyUI.exe
   キーバインド設定
 
+・mpv_color_UI.exe
+  色調補正UI
+
+・mpv_31-band_Graphic_EQ.exe
+  31バンド　グラフィカルイコライザー
+
+・mpv_filter_chain_UI.exe
+  カスタムフィルターUI
+
+
 ■ Related combinations / generated files
 ・dshow_cmd_launch.lua / dshowCap.exe / dshow_cmd_launch.conf
   外部キャプチャ関連
@@ -105,3 +115,15 @@ Tools and Scripts
 ・dvdmenu.exe / dvdmenu_return.lua
   DVD メニュー表示関連
   dvdmenu_return.lua は自動生成される
+
+・mpv_color_UI.exe
+　mpv.confに　input-ipc-server=\\.\pipe\mpv-tool　を記述。
+　cacheフォルダにColorフォルダを作成してjsonファイル生成
+
+・mpv_31-band_Graphic_EQ.exe
+　mpv.confに　input-ipc-server=\\.\pipe\mpv-tool　を記述。
+　cacheフォルダにEQ31フォルダを作成してjsonファイル生成
+
+・mpv_31-band_Graphic_EQ.exe
+　mpv.confに　input-ipc-server=\\.\pipe\mpv-tool　を記述。
+　cacheフォルダにfilter_chainsフォルダを作成してjsonファイル生成
