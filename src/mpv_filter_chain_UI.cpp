@@ -917,14 +917,17 @@ static bool ClearMpvFiltersOnly(AppState* st, bool showStatus) {
     std::wstring used;
     bool ok = true;
     ok = ok && SendMpvCommandRaw(st->pipePath, {L"set", L"video-aspect-override", L"-1"}, &used);
+    // mpv's standard deinterlacer is controlled by the independent "deinterlace" property,
+    // not by the normal vf list.  Therefore vf clr alone does not turn it off.
+    ok = ok && SendMpvCommandRaw(st->pipePath, {L"set", L"deinterlace", L"no"}, &used);
     ok = ok && SendMpvCommandRaw(st->pipePath, {L"vf", L"clr", L""}, &used);
     ok = ok && SendMpvCommandRaw(st->pipePath, {L"change-list", L"glsl-shaders", L"clr", L""}, &used);
-    ok = ok && SendMpvCommandRaw(st->pipePath, {L"show-text", L"フィルタ/シェーダー全OFF"}, &used);
+    ok = ok && SendMpvCommandRaw(st->pipePath, {L"show-text", L"フィルタ/シェーダー/インターレース解除 全OFF"}, &used);
     if (ok) {
         st->everConnectedToMpv = true;
         st->pipeLostCount = 0;
         if (!used.empty()) st->pipePath = used;
-        if (showStatus) SetStatus(st, TxtS(st, L"mpv側のフィルターをOFFにしました。現在チェーンは保持しています。", L"mpv-side filters were turned OFF. The current chain is kept."));
+        if (showStatus) SetStatus(st, TxtS(st, L"mpv側のフィルターとインターレース解除をOFFにしました。現在チェーンは保持しています。", L"mpv-side filters and deinterlacing were turned OFF. The current chain is kept."));
     } else if (showStatus) {
         SetStatus(st, TxtS(st, L"mpv IPC pipe に接続できません。UI状態はそのままです。", L"Could not connect to the mpv IPC pipe. The UI state was kept as-is."));
     }
