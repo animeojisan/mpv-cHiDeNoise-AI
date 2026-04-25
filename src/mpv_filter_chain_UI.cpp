@@ -58,6 +58,7 @@ static const DWORD APP_WINDOW_STYLE = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | 
 #define IDC_NEW_PRESET      1018
 #define IDC_DELETE_PRESET   1019
 #define IDC_LANGUAGE        1020
+#define IDC_ALWAYS_ON_TOP   1021
 #define IDC_NAME_DIALOG_EDIT  2001
 #define IDC_NAME_DIALOG_SAVE  2002
 #define IDC_NAME_DIALOG_CANCEL 2003
@@ -99,6 +100,7 @@ struct AppState {
     HWND hPresetSelectLabel = nullptr;
     HWND hPresetNameLabel = nullptr;
     HWND hPreviewCheck = nullptr;
+    HWND hAlwaysOnTopCheck = nullptr;
     HWND hLanguageButton = nullptr;
     HANDLE hResetEvent = nullptr;
 
@@ -111,6 +113,7 @@ struct AppState {
     int currentPresetIndex = -1;
     bool suppressPresetComboEvent = false;
     bool previewEnabled = true;
+    bool alwaysOnTop = false;
     std::wstring language = L"ja";
 
     bool everConnectedToMpv = false;
@@ -375,6 +378,7 @@ static void EnsureDefaultJson(const AppState& st) {
         L"  \"version\": 2,\n"
         L"  \"last_selected\": \"Custom 1\",\n"
         L"  \"preview_enabled\": \"true\",\n"
+        L"  \"always_on_top\": \"false\",\n"
         L"  \"language\": \"ja\",\n"
         L"  \"chains\": [\n"
         L"    {\n"
@@ -866,7 +870,22 @@ static void UpdatePreviewCheck(AppState* st) {
     SendMessageW(st->hPreviewCheck, BM_SETCHECK, st->previewEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
+static void UpdateAlwaysOnTopCheck(AppState* st) {
+    if (!st || !st->hAlwaysOnTopCheck) return;
+    SetWindowTextW(st->hAlwaysOnTopCheck, Txt(st, L"常に最前面へ", L"Always on top"));
+    SendMessageW(st->hAlwaysOnTopCheck, BM_SETCHECK, st->alwaysOnTop ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+static void ApplyAlwaysOnTop(AppState* st) {
+    if (!st || !st->hwnd) return;
+    SetWindowPos(st->hwnd,
+                 st->alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
+                 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 static bool ClearMpvFiltersOnly(AppState* st, bool showStatus);
+static bool SaveAllPresets(AppState* st, const std::wstring& lastSelectedName);
 
 static void MarkCurrentChainEdited(AppState* st) {
     if (!st) return;
@@ -932,6 +951,24 @@ static void TogglePreview(AppState* st) {
     UpdatePreviewCheck(st);
 }
 
+static void ToggleAlwaysOnTop(AppState* st) {
+    if (!st) return;
+
+    LRESULT checked = SendMessageW(st->hAlwaysOnTopCheck, BM_GETCHECK, 0, 0);
+    st->alwaysOnTop = (checked == BST_CHECKED);
+    ApplyAlwaysOnTop(st);
+    UpdateAlwaysOnTopCheck(st);
+
+    std::wstring last = L"Custom 1";
+    int sel = st->hPresetCombo ? (int)SendMessageW(st->hPresetCombo, CB_GETCURSEL, 0, 0) : -1;
+    if (sel >= 0 && sel < (int)st->presets.size()) last = st->presets[(size_t)sel].name;
+    SaveAllPresets(st, last);
+
+    SetStatus(st, st->alwaysOnTop
+        ? TxtS(st, L"常に最前面をONにしました。", L"Always on top was turned ON.")
+        : TxtS(st, L"常に最前面をOFFにしました。", L"Always on top was turned OFF."));
+}
+
 static void ClearChainAndMpv(AppState* st) {
     st->chain.clear();
     RefreshChainList(st);
@@ -979,6 +1016,10 @@ static bool LoadAllPresets(AppState* st, std::wstring* lastSelected = nullptr) {
     {
         std::wstring pv = ExtractJsonStringValue(text, L"preview_enabled");
         if (!pv.empty()) st->previewEnabled = (pv != L"false" && pv != L"0");
+    }
+    {
+        std::wstring atop = ExtractJsonStringValue(text, L"always_on_top");
+        if (!atop.empty()) st->alwaysOnTop = (atop != L"false" && atop != L"0");
     }
     {
         std::wstring lang = ExtractJsonStringValue(text, L"language");
@@ -1032,6 +1073,7 @@ static bool SaveAllPresets(AppState* st, const std::wstring& lastSelectedName) {
     json += L"  \"version\": 2,\n";
     json += L"  \"last_selected\": \"" + JsonEscapeWide(lastSelectedName) + L"\",\n";
     json += L"  \"preview_enabled\": \"" + std::wstring(st->previewEnabled ? L"true" : L"false") + L"\",\n";
+    json += L"  \"always_on_top\": \"" + std::wstring(st->alwaysOnTop ? L"true" : L"false") + L"\",\n";
     json += L"  \"language\": \"" + JsonEscapeWide(st->language) + L"\",\n";
     json += L"  \"chains\": [\n";
     for (size_t pi = 0; pi < st->presets.size(); ++pi) {
@@ -1540,6 +1582,7 @@ static void ApplyLanguage(AppState* st) {
     if (!st) return;
     if (st->hwnd) SetWindowTextW(st->hwnd, L"mpv filter chain UI");
     if (st->hPreviewCheck) SetWindowTextW(st->hPreviewCheck, Txt(st, L"プレビュー", L"Preview"));
+    if (st->hAlwaysOnTopCheck) SetWindowTextW(st->hAlwaysOnTopCheck, Txt(st, L"常に最前面へ", L"Always on top"));
     if (st->hLanguageButton) SetWindowTextW(st->hLanguageButton, L"言語 / Language");
     if (st->hChainLabel) SetWindowTextW(st->hChainLabel, Txt(st, L"現在のチェーン（ドラッグで並べ替え可）", L"Current chain (drag to reorder)"));
     if (st->hCandidateLabel) SetWindowTextW(st->hCandidateLabel, Txt(st, L"利用可能フィルター（input.conf順）", L"Available filters (input.conf order)"));
@@ -1556,6 +1599,7 @@ static void ApplyLanguage(AppState* st) {
     SetWindowTextW(GetDlgItem(st->hwnd, IDC_LOAD), Txt(st, L"名前変更", L"Rename"));
     SetWindowTextW(GetDlgItem(st->hwnd, IDC_DELETE_PRESET), Txt(st, L"削除", L"Delete"));
     UpdatePreviewCheck(st);
+    UpdateAlwaysOnTopCheck(st);
 }
 
 static void ToggleLanguage(AppState* st) {
@@ -1589,11 +1633,16 @@ static void LayoutControls(AppState* st, int w, int clientH) {
     int btnX = leftX + leftW + 10;
     int rightX = btnX + midGap - 10;
 
-    // Top area: Preview checkbox on the far left, language button on the far right.
+    // Top area: Preview and Always-on-top checkboxes on the far left, language button on the far right.
     int langW = 150;
-    MoveWindow(st->hPreviewCheck, leftX, margin + 6, 110, 24, TRUE);
+    int previewW = 110;
+    int topMostW = 150;
+    int topMostX = leftX + previewW + 8;
+    int statusX = topMostX + topMostW + 10;
+    MoveWindow(st->hPreviewCheck, leftX, margin + 6, previewW, 24, TRUE);
+    MoveWindow(st->hAlwaysOnTopCheck, topMostX, margin + 6, topMostW, 24, TRUE);
     MoveWindow(st->hLanguageButton, w - margin - langW, margin + 4, langW, 26, TRUE);
-    MoveWindow(st->hStatus, leftX + 120, margin + 4, w - margin * 2 - 120 - langW - 8, 24, TRUE);
+    MoveWindow(st->hStatus, statusX, margin + 4, w - margin - langW - 8 - statusX, 24, TRUE);
 
     MoveWindow(st->hChainLabel, leftX, listTop, leftW, 20, TRUE);
     MoveWindow(st->hCandidateLabel, rightX, listTop, rightW, 20, TRUE);
@@ -1650,6 +1699,7 @@ static void LayoutControls(AppState* st, int w, int clientH) {
 
 static void CreateControls(AppState* st) {
     st->hPreviewCheck = CreateWindowExW(0, L"BUTTON", L"プレビュー", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 10, 10, 110, 24, st->hwnd, (HMENU)IDC_PREVIEW, st->hInst, nullptr);
+    st->hAlwaysOnTopCheck = CreateWindowExW(0, L"BUTTON", L"常に最前面へ", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 10, 10, 150, 24, st->hwnd, (HMENU)IDC_ALWAYS_ON_TOP, st->hInst, nullptr);
     st->hLanguageButton = CreateWindowExW(0, L"BUTTON", L"言語 / Language", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 10, 150, 26, st->hwnd, (HMENU)IDC_LANGUAGE, st->hInst, nullptr);
     st->hStatus = CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE, 10, 12, 940, 24, st->hwnd, (HMENU)IDC_STATUS, st->hInst, nullptr);
 
@@ -1685,7 +1735,7 @@ static void CreateControls(AppState* st) {
 
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     HWND children[] = {
-        st->hPreviewCheck, st->hLanguageButton, st->hStatus, st->hCandidateLabel, st->hChainLabel, st->hCandidates, st->hChain,
+        st->hPreviewCheck, st->hAlwaysOnTopCheck, st->hLanguageButton, st->hStatus, st->hCandidateLabel, st->hChainLabel, st->hCandidates, st->hChain,
         st->hPresetGroup, st->hPresetSelectLabel, st->hPresetNameLabel, st->hPresetCombo, st->hPresetName,
         GetDlgItem(st->hwnd, IDC_ADD), GetDlgItem(st->hwnd, IDC_REMOVE), GetDlgItem(st->hwnd, IDC_UP),
         GetDlgItem(st->hwnd, IDC_DOWN), GetDlgItem(st->hwnd, IDC_CLEAR), GetDlgItem(st->hwnd, IDC_NEW_PRESET),
@@ -1728,6 +1778,9 @@ static void OnCommand(AppState* st, WPARAM wp, LPARAM) {
         break;
     case IDC_PREVIEW:
         TogglePreview(st);
+        break;
+    case IDC_ALWAYS_ON_TOP:
+        ToggleAlwaysOnTop(st);
         break;
     case IDC_LANGUAGE:
         ToggleLanguage(st);
@@ -1827,6 +1880,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         RefreshCandidateTree(st);
         LoadChain(st);
         ApplyLanguage(st);
+        ApplyAlwaysOnTop(st);
         if (st->previewEnabled) ApplyChain(st, false);
         else ClearMpvFiltersOnly(st, false);
         SetTimer(hwnd, 1, 250, nullptr);
