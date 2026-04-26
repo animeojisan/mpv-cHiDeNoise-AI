@@ -4,9 +4,17 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+
+#ifndef PDH_MORE_DATA
+#define PDH_MORE_DATA ((PDH_STATUS)0x800007D2L)
+#endif
 
 #include <algorithm>
 #include <cwctype>
+#include <cwchar>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <set>
@@ -15,6 +23,7 @@
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "pdh.lib")
 
 // mpv_filter_chain_UI.cpp
 // ------------------------------------------------------------
@@ -59,6 +68,7 @@ static const DWORD APP_WINDOW_STYLE = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | 
 #define IDC_DELETE_PRESET   1019
 #define IDC_LANGUAGE        1020
 #define IDC_ALWAYS_ON_TOP   1021
+#define IDC_LOAD_METER      1022
 #define IDC_NAME_DIALOG_EDIT  2001
 #define IDC_NAME_DIALOG_SAVE  2002
 #define IDC_NAME_DIALOG_CANCEL 2003
@@ -102,7 +112,25 @@ struct AppState {
     HWND hPreviewCheck = nullptr;
     HWND hAlwaysOnTopCheck = nullptr;
     HWND hLanguageButton = nullptr;
+    HWND hLoadMeter = nullptr;
     HANDLE hResetEvent = nullptr;
+
+    double cpuLoad = 0.0;
+    double gpuLoad = -1.0;
+    bool cpuLoadInitialized = false;
+    FILETIME prevIdleTime{};
+    FILETIME prevKernelTime{};
+    FILETIME prevUserTime{};
+    PDH_HQUERY gpuQuery = nullptr;
+    PDH_HCOUNTER gpuCounter = nullptr;
+    bool gpuCounterReady = false;
+    ULONGLONG lastLoadUpdateTick = 0;
+
+    // Display a realtime drop delta, not mpv's cumulative drop counter.
+    long long frameDropCount = -1;
+    long long lastFrameDropTotal = -1;
+    long long decoderFrameDropCount = -1;
+    ULONGLONG lastMpvStatsUpdateTick = 0;
 
     std::wstring baseDir;
     std::wstring pipePath;
@@ -789,6 +817,106 @@ static bool SendMpvCommandRaw(const std::wstring& pipePath, const std::vector<st
         }
     }
     return false;
+}
+
+
+static bool ExtractJsonInt64Data(const std::string& json, long long* out) {
+    if (!out) return false;
+    size_t p = json.find("\"data\"");
+    if (p == std::string::npos) return false;
+    p = json.find(':', p);
+    if (p == std::string::npos) return false;
+    ++p;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' || json[p] == '\n')) ++p;
+    if (p >= json.size()) return false;
+    if (json.compare(p, 4, "null") == 0) return false;
+
+    bool neg = false;
+    if (json[p] == '-') { neg = true; ++p; }
+    if (p >= json.size() || json[p] < '0' || json[p] > '9') return false;
+
+    long long v = 0;
+    while (p < json.size() && json[p] >= '0' && json[p] <= '9') {
+        v = v * 10 + (json[p] - '0');
+        ++p;
+    }
+    *out = neg ? -v : v;
+    return true;
+}
+
+static bool ReadMpvPropertyInt64(const std::wstring& pipePath, const std::wstring& property, long long* value, std::wstring* usedPipe = nullptr) {
+    if (!value) return false;
+    std::vector<std::wstring> pipes = CandidatePipePaths(pipePath);
+
+    std::string json = "{\"command\":[\"get_property\",\"" + JsonEscapeUtf8(WideToUtf8(property)) + "\"],\"request_id\":9201}\n";
+
+    for (const auto& p : pipes) {
+        HANDLE h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY) {
+            if (WaitNamedPipeW(p.c_str(), 50)) {
+                h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+            }
+        }
+        if (h == INVALID_HANDLE_VALUE) continue;
+
+        DWORD written = 0;
+        BOOL ok = WriteFile(h, json.data(), (DWORD)json.size(), &written, nullptr);
+        if (!ok || written != json.size()) {
+            CloseHandle(h);
+            continue;
+        }
+
+        std::string response;
+        char buf[2048];
+        for (int retry = 0; retry < 20; ++retry) { // about 200ms max, but usually returns immediately
+            DWORD available = 0;
+            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &available, nullptr)) break;
+            if (available == 0) {
+                Sleep(10);
+                continue;
+            }
+
+            DWORD toRead = available < (DWORD)(sizeof(buf) - 1) ? available : (DWORD)(sizeof(buf) - 1);
+            DWORD read = 0;
+            if (!ReadFile(h, buf, toRead, &read, nullptr) || read == 0) break;
+            response.append(buf, buf + read);
+            if (response.find('\n') != std::string::npos || response.size() > 4096) break;
+        }
+
+        CloseHandle(h);
+
+        long long parsed = 0;
+        if (ExtractJsonInt64Data(response, &parsed)) {
+            *value = parsed;
+            if (usedPipe) *usedPipe = p;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void UpdateMpvDropStats(AppState* st) {
+    if (!st) return;
+
+    std::wstring used;
+    long long v = -1;
+    bool ok = ReadMpvPropertyInt64(st->pipePath, L"frame-drop-count", &v, &used);
+    if (ok) {
+        // mpv's frame-drop-count is cumulative for the current playback.
+        // For the UI, show only the realtime increase since the previous poll.
+        // If it does not increase, show Drop 0 so users can judge the current chain.
+        long long delta = 0;
+        if (st->lastFrameDropTotal >= 0 && v >= st->lastFrameDropTotal) {
+            delta = v - st->lastFrameDropTotal;
+        }
+        st->lastFrameDropTotal = v;
+        st->frameDropCount = delta;
+
+        st->everConnectedToMpv = true;
+        st->pipeLostCount = 0;
+        if (!used.empty()) st->pipePath = used;
+    }
 }
 
 static bool TestPipe(AppState* st) {
@@ -1551,6 +1679,311 @@ static LRESULT CALLBACK ChainListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return CallWindowProcW(st->oldChainProc, hwnd, msg, wp, lp);
 }
 
+
+static ULONGLONG FileTimeToU64(const FILETIME& ft) {
+    ULARGE_INTEGER v{};
+    v.LowPart = ft.dwLowDateTime;
+    v.HighPart = ft.dwHighDateTime;
+    return v.QuadPart;
+}
+
+static double ClampPercent(double v) {
+    if (v < 0.0) return 0.0;
+    if (v > 100.0) return 100.0;
+    return v;
+}
+
+static double QueryCpuLoad(AppState* st) {
+    if (!st) return 0.0;
+
+    FILETIME idle{}, kernel{}, user{};
+    if (!GetSystemTimes(&idle, &kernel, &user)) return st->cpuLoad;
+
+    if (!st->cpuLoadInitialized) {
+        st->prevIdleTime = idle;
+        st->prevKernelTime = kernel;
+        st->prevUserTime = user;
+        st->cpuLoadInitialized = true;
+        return st->cpuLoad;
+    }
+
+    ULONGLONG idleDiff = FileTimeToU64(idle) - FileTimeToU64(st->prevIdleTime);
+    ULONGLONG kernelDiff = FileTimeToU64(kernel) - FileTimeToU64(st->prevKernelTime);
+    ULONGLONG userDiff = FileTimeToU64(user) - FileTimeToU64(st->prevUserTime);
+    ULONGLONG total = kernelDiff + userDiff;
+
+    st->prevIdleTime = idle;
+    st->prevKernelTime = kernel;
+    st->prevUserTime = user;
+
+    if (total == 0) return st->cpuLoad;
+    double busy = (double)(total > idleDiff ? total - idleDiff : 0);
+    return ClampPercent((busy * 100.0) / (double)total);
+}
+
+static void InitGpuLoadMonitor(AppState* st) {
+    if (!st || st->gpuQuery || st->gpuCounterReady) return;
+
+    PDH_STATUS status = PdhOpenQueryW(nullptr, 0, &st->gpuQuery);
+    if (status != ERROR_SUCCESS) {
+        st->gpuQuery = nullptr;
+        st->gpuLoad = -1.0;
+        return;
+    }
+
+    // System-wide GPU load. PdhAddEnglishCounterW keeps this working on Japanese Windows.
+    status = PdhAddEnglishCounterW(st->gpuQuery,
+                                   L"\\GPU Engine(*)\\Utilization Percentage",
+                                   0,
+                                   &st->gpuCounter);
+    if (status != ERROR_SUCCESS) {
+        PdhCloseQuery(st->gpuQuery);
+        st->gpuQuery = nullptr;
+        st->gpuCounter = nullptr;
+        st->gpuLoad = -1.0;
+        return;
+    }
+
+    st->gpuCounterReady = true;
+    PdhCollectQueryData(st->gpuQuery);
+}
+
+static double QueryGpuLoad(AppState* st) {
+    if (!st) return -1.0;
+    if (!st->gpuCounterReady) InitGpuLoadMonitor(st);
+    if (!st->gpuCounterReady || !st->gpuQuery || !st->gpuCounter) return -1.0;
+
+    PDH_STATUS status = PdhCollectQueryData(st->gpuQuery);
+    if (status != ERROR_SUCCESS) return st->gpuLoad;
+
+    DWORD bufferSize = 0;
+    DWORD itemCount = 0;
+    status = PdhGetFormattedCounterArrayW(st->gpuCounter,
+                                          PDH_FMT_DOUBLE,
+                                          &bufferSize,
+                                          &itemCount,
+                                          nullptr);
+    if (status != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0) return st->gpuLoad;
+
+    std::vector<BYTE> buffer(bufferSize);
+    PPDH_FMT_COUNTERVALUE_ITEM_W items = reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_W>(buffer.data());
+    status = PdhGetFormattedCounterArrayW(st->gpuCounter,
+                                          PDH_FMT_DOUBLE,
+                                          &bufferSize,
+                                          &itemCount,
+                                          items);
+    if (status != ERROR_SUCCESS) return st->gpuLoad;
+
+    double total = 0.0;
+    for (DWORD i = 0; i < itemCount; ++i) {
+        if (items[i].FmtValue.CStatus == ERROR_SUCCESS) {
+            double v = items[i].FmtValue.doubleValue;
+            if (v > 0.0) total += v;
+        }
+    }
+    return ClampPercent(total);
+}
+
+static void ShutdownGpuLoadMonitor(AppState* st) {
+    if (!st) return;
+    if (st->gpuQuery) PdhCloseQuery(st->gpuQuery);
+    st->gpuQuery = nullptr;
+    st->gpuCounter = nullptr;
+    st->gpuCounterReady = false;
+}
+
+static void UpdateLoadValues(AppState* st) {
+    if (!st) return;
+    st->cpuLoad = QueryCpuLoad(st);
+    st->gpuLoad = QueryGpuLoad(st);
+
+    ULONGLONG now = GetTickCount64();
+    if (st->lastMpvStatsUpdateTick == 0 || now - st->lastMpvStatsUpdateTick >= 500) {
+        st->lastMpvStatsUpdateTick = now;
+        UpdateMpvDropStats(st);
+    }
+
+    if (st->hLoadMeter) InvalidateRect(st->hLoadMeter, nullptr, FALSE);
+}
+
+static COLORREF MeterColorForRange(int rangeIndex) {
+    if (rangeIndex == 0) return RGB(45, 185, 95);   // 0-60%
+    if (rangeIndex == 1) return RGB(230, 190, 40);  // 60-80%
+    return RGB(220, 70, 60);                        // 80-100%
+}
+
+static void FillMeterSegment(HDC dc, const RECT& bar, double value, double fromPct, double toPct, COLORREF color) {
+    if (value <= fromPct) return;
+    double hi = value < toPct ? value : toPct;
+    int h = bar.bottom - bar.top;
+    RECT seg = bar;
+    seg.top = bar.bottom - (int)((hi / 100.0) * h + 0.5);
+    seg.bottom = bar.bottom - (int)((fromPct / 100.0) * h + 0.5);
+    if (seg.top < bar.top) seg.top = bar.top;
+    if (seg.bottom > bar.bottom) seg.bottom = bar.bottom;
+    if (seg.bottom <= seg.top) return;
+    HBRUSH b = CreateSolidBrush(color);
+    FillRect(dc, &seg, b);
+    DeleteObject(b);
+}
+
+static void DrawBarFrame(HDC dc, const RECT& rc, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HPEN oldPen = (HPEN)SelectObject(dc, pen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+static void DrawOneMeter(HDC dc, RECT rc, const wchar_t* label, double value, bool available) {
+    SetBkMode(dc, TRANSPARENT);
+
+    HFONT smallFont = CreateFontW(-10, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT oldFont = smallFont ? (HFONT)SelectObject(dc, smallFont) : nullptr;
+
+    SetTextColor(dc, RGB(210, 220, 210));
+    RECT labelRc = rc;
+    labelRc.bottom = labelRc.top + 11;
+    DrawTextW(dc, label, -1, &labelRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    RECT bar = rc;
+    bar.left += 15;
+    bar.right -= 15;
+    bar.top += 13;
+    bar.bottom -= 13;
+
+    HBRUSH bg = CreateSolidBrush(RGB(30, 32, 34));
+    FillRect(dc, &bar, bg);
+    DeleteObject(bg);
+
+    if (available) {
+        double v = ClampPercent(value);
+        FillMeterSegment(dc, bar, v, 0.0, 60.0, MeterColorForRange(0));
+        FillMeterSegment(dc, bar, v, 60.0, 80.0, MeterColorForRange(1));
+        FillMeterSegment(dc, bar, v, 80.0, 100.0, MeterColorForRange(2));
+    }
+
+    // 10% step guide lines. All guide lines use the same dark brightness,
+    // so 20/40/60/80% no longer stand out more than 10/30/50/70/90%.
+    int h = bar.bottom - bar.top;
+    for (int pct = 10; pct <= 90; pct += 10) {
+        HPEN guidePen = CreatePen(PS_SOLID, 1, RGB(52, 56, 55));
+        HPEN oldPen = (HPEN)SelectObject(dc, guidePen);
+        int y = bar.bottom - (int)(h * (pct / 100.0) + 0.5);
+        MoveToEx(dc, bar.left + 1, y, nullptr);
+        LineTo(dc, bar.right - 1, y);
+        SelectObject(dc, oldPen);
+        DeleteObject(guidePen);
+    }
+    DrawBarFrame(dc, bar, RGB(95, 105, 100));
+
+    wchar_t text[64]{};
+    if (available) swprintf_s(text, L"%.0f%%", ClampPercent(value));
+    else lstrcpyW(text, L"N/A");
+
+    SetTextColor(dc, RGB(230, 235, 230));
+    RECT valueRc = rc;
+    valueRc.top = valueRc.bottom - 12;
+    DrawTextW(dc, text, -1, &valueRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    if (oldFont) SelectObject(dc, oldFont);
+    if (smallFont) DeleteObject(smallFont);
+}
+
+static void DrawLoadMeter(AppState* st, HDC paintDc, const RECT& rc) {
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+
+    HDC memDc = CreateCompatibleDC(paintDc);
+    HBITMAP bmp = CreateCompatibleBitmap(paintDc, w, h);
+    HBITMAP oldBmp = (HBITMAP)SelectObject(memDc, bmp);
+
+    RECT full{0, 0, w, h};
+    HBRUSH bg = CreateSolidBrush(RGB(14, 15, 16));
+    FillRect(memDc, &full, bg);
+    DeleteObject(bg);
+    DrawBarFrame(memDc, full, RGB(75, 82, 78));
+
+    SetBkMode(memDc, TRANSPARENT);
+
+    HFONT tinyFont = CreateFontW(-9, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT oldTiny = tinyFont ? (HFONT)SelectObject(memDc, tinyFont) : nullptr;
+
+    wchar_t dropText[64]{};
+    COLORREF dropColor = RGB(180, 190, 180);
+    if (st && st->frameDropCount >= 0) {
+        swprintf_s(dropText, L"Drop %lld", st->frameDropCount);
+        dropColor = (st->frameDropCount == 0) ? RGB(80, 220, 255) : RGB(255, 165, 45);
+    } else {
+        lstrcpyW(dropText, L"Drop N/A");
+    }
+    SetTextColor(memDc, dropColor);
+    RECT dropRc{5, 1, w / 2 + 38, 14};
+    DrawTextW(memDc, dropText, -1, &dropRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    SetTextColor(memDc, RGB(180, 190, 180));
+    RECT title{w / 2 + 20, 1, w - 5, 12};
+    DrawTextW(memDc, L"LOAD", -1, &title, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+
+    if (oldTiny) SelectObject(memDc, oldTiny);
+    if (tinyFont) DeleteObject(tinyFont);
+
+    RECT cpuRc{10, 13, w / 2 - 4, h - 4};
+    RECT gpuRc{w / 2 + 4, 13, w - 10, h - 4};
+    DrawOneMeter(memDc, cpuRc, L"CPU", st ? st->cpuLoad : 0.0, true);
+    DrawOneMeter(memDc, gpuRc, L"GPU", st ? st->gpuLoad : -1.0, st && st->gpuLoad >= 0.0);
+
+    BitBlt(paintDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+    SelectObject(memDc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(memDc);
+}
+
+static LRESULT CALLBACK LoadMeterProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    AppState* st = (AppState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_NCCREATE: {
+        CREATESTRUCTW* cs = (CREATESTRUCTW*)lp;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        return TRUE;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        DrawLoadMeter(st, dc, rc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void RegisterLoadMeterClass(HINSTANCE hInst) {
+    static bool registered = false;
+    if (registered) return;
+
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = LoadMeterProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"mpv_filter_chain_UI_load_meter";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    RegisterClassW(&wc);
+    registered = true;
+}
+
 static HWND MakeLabel(HWND parent, const wchar_t* text) {
     return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE, 0, 0, 100, 20, parent, nullptr, nullptr, nullptr);
 }
@@ -1670,7 +2103,15 @@ static void LayoutControls(AppState* st, int w, int clientH) {
     // which could clip the top of the "プリセット管理" group title.
     int groupY = clientH - bottom + 18;
     int groupH = bottom - 28;
-    int groupW = w - margin * 2;
+    // Leave a dedicated right-bottom area for the load meter.
+    // This avoids overlapping the groupbox, which can repaint over custom child windows
+    // on some Windows themes and make the meter appear invisible.
+    const int meterW = 164;
+    const int meterH = 112;
+    int meterX = w - margin - meterW;
+    int meterY = clientH - margin - meterH;
+
+    int groupW = meterX - leftX - 10;
     if (groupW < 420) groupW = 420;
 
     MoveWindow(st->hPresetGroup, leftX, groupY, groupW, groupH, TRUE);
@@ -1697,6 +2138,12 @@ static void LayoutControls(AppState* st, int w, int clientH) {
     ctrl = GetDlgItem(st->hwnd, IDC_LOAD);          MoveWindowTop(ctrl, x, rowY, 90, 28);  x += 98;
     ctrl = GetDlgItem(st->hwnd, IDC_DELETE_PRESET); MoveWindowTop(ctrl, x, rowY, 70, 28);
 
+    if (st->hLoadMeter) {
+        MoveWindowTop(st->hLoadMeter, meterX, meterY, meterW, meterH);
+        ShowWindow(st->hLoadMeter, SW_SHOW);
+        RedrawWindow(st->hLoadMeter, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    }
+
     RedrawPresetControls(st);
 }
 
@@ -1705,6 +2152,11 @@ static void CreateControls(AppState* st) {
     st->hAlwaysOnTopCheck = CreateWindowExW(0, L"BUTTON", L"常に最前面へ", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 10, 10, 150, 24, st->hwnd, (HMENU)IDC_ALWAYS_ON_TOP, st->hInst, nullptr);
     st->hLanguageButton = CreateWindowExW(0, L"BUTTON", L"言語 / Language", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 10, 150, 26, st->hwnd, (HMENU)IDC_LANGUAGE, st->hInst, nullptr);
     st->hStatus = CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE, 10, 12, 940, 24, st->hwnd, (HMENU)IDC_STATUS, st->hInst, nullptr);
+
+    RegisterLoadMeterClass(st->hInst);
+    st->hLoadMeter = CreateWindowExW(WS_EX_CLIENTEDGE, L"mpv_filter_chain_UI_load_meter", L"",
+                                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 900, 496, 164, 112,
+                                     st->hwnd, (HMENU)IDC_LOAD_METER, st->hInst, st);
 
     st->hChainLabel = MakeLabel(st->hwnd, L"現在のチェーン（ドラッグで並べ替え可）");
     st->hCandidateLabel = MakeLabel(st->hwnd, L"利用可能フィルター（input.conf順）");
@@ -1738,7 +2190,7 @@ static void CreateControls(AppState* st) {
 
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     HWND children[] = {
-        st->hPreviewCheck, st->hAlwaysOnTopCheck, st->hLanguageButton, st->hStatus, st->hCandidateLabel, st->hChainLabel, st->hCandidates, st->hChain,
+        st->hPreviewCheck, st->hAlwaysOnTopCheck, st->hLanguageButton, st->hStatus, st->hLoadMeter, st->hCandidateLabel, st->hChainLabel, st->hCandidates, st->hChain,
         st->hPresetGroup, st->hPresetSelectLabel, st->hPresetNameLabel, st->hPresetCombo, st->hPresetName,
         GetDlgItem(st->hwnd, IDC_ADD), GetDlgItem(st->hwnd, IDC_REMOVE), GetDlgItem(st->hwnd, IDC_UP),
         GetDlgItem(st->hwnd, IDC_DOWN), GetDlgItem(st->hwnd, IDC_CLEAR), GetDlgItem(st->hwnd, IDC_NEW_PRESET),
@@ -1886,6 +2338,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ApplyAlwaysOnTop(st);
         if (st->previewEnabled) ApplyChain(st, false);
         else ClearMpvFiltersOnly(st, false);
+        UpdateLoadValues(st);
+        st->lastLoadUpdateTick = GetTickCount64();
         SetTimer(hwnd, 1, 250, nullptr);
         return 0;
     }
@@ -1904,6 +2358,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_TIMER:
         if (st) {
+            ULONGLONG now = GetTickCount64();
+            if (now - st->lastLoadUpdateTick >= 500) {
+                st->lastLoadUpdateTick = now;
+                UpdateLoadValues(st);
+            }
+
             if (st->hResetEvent && WaitForSingleObject(st->hResetEvent, 0) == WAIT_OBJECT_0) {
                 ResetEvent(st->hResetEvent);
                 ClearChainAndMpv(st);
@@ -1918,6 +2378,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         if (st) {
+            ShutdownGpuLoadMonitor(st);
             std::wstring last = L"Custom 1";
             int sel = (int)SendMessageW(st->hPresetCombo, CB_GETCURSEL, 0, 0);
             if (sel >= 0 && sel < (int)st->presets.size()) last = st->presets[(size_t)sel].name;
