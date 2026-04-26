@@ -124,6 +124,6 @@ Tools and Scripts
 　mpv.confに　input-ipc-server=\\.\pipe\mpv-tool　を記述。
 　cacheフォルダにEQ31フォルダを作成してjsonファイル生成
 
-・mpv_31-band_Graphic_EQ.exe
+・mpv_filter_chain_UI.exe
 　mpv.confに　input-ipc-server=\\.\pipe\mpv-tool　を記述。
 　cacheフォルダにfilter_chainsフォルダを作成してjsonファイル生成
