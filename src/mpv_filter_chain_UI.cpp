@@ -6,6 +6,7 @@
 #include <shellapi.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#include <dxgi.h>
 
 #ifndef PDH_MORE_DATA
 #define PDH_MORE_DATA ((PDH_STATUS)0x800007D2L)
@@ -24,6 +25,7 @@
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "pdh.lib")
+#pragma comment(lib, "dxgi.lib")
 
 // mpv_filter_chain_UI.cpp
 // ------------------------------------------------------------
@@ -116,7 +118,13 @@ struct AppState {
     HANDLE hResetEvent = nullptr;
 
     double cpuLoad = 0.0;
-    double gpuLoad = -1.0;
+    double gpuLoad = -1.0;      // total fallback / compatibility
+    double gpuLoad0 = -1.0;     // DXGI adapter GPU0
+    double gpuLoad1 = -1.0;     // DXGI adapter GPU1
+    bool gpuAdapterValid[2] = {false, false};
+    LUID gpuAdapterLuid[2]{};
+    std::wstring gpuAdapterName[2];
+    bool gpuAdapterMapInitialized = false;
     bool cpuLoadInitialized = false;
     FILETIME prevIdleTime{};
     FILETIME prevKernelTime{};
@@ -254,6 +262,62 @@ static std::wstring DirName(const std::wstring& path) {
     size_t p = path.find_last_of(L"\\/");
     if (p == std::wstring::npos) return L"";
     return path.substr(0, p);
+}
+
+
+// ------------------------------------------------------------
+// Temporary distribution-check logging.
+// Set to 0 again before the final public release if the logs are no longer needed.
+// Log file:
+//   portable_config\cache\filter_chains\mpv_filter_chain_UI_debug.txt
+// ------------------------------------------------------------
+static const bool DEBUG_LOG_ENABLED = false;
+
+static std::wstring DebugLogPath() {
+    return GetModuleDir() + L"\\portable_config\\cache\\filter_chains\\mpv_filter_chain_UI_debug.txt";
+}
+
+static std::wstring NowForLog() {
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    wchar_t buf[64]{};
+    swprintf_s(buf, L"%04u-%02u-%02u %02u:%02u:%02u.%03u",
+               t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+    return buf;
+}
+
+static std::wstring LastErrorForLog(DWORD err) {
+    if (err == ERROR_SUCCESS) return L"0";
+    wchar_t buf[64]{};
+    swprintf_s(buf, L"%lu", (unsigned long)err);
+    return buf;
+}
+
+static std::wstring ArgsForLog(const std::vector<std::wstring>& args) {
+    std::wstring s;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) s += L" | ";
+        s += args[i];
+    }
+    return s;
+}
+
+static void LogDebug(const std::wstring& category, const std::wstring& message) {
+    if (!DEBUG_LOG_ENABLED) return;
+
+    std::wstring path = DebugLogPath();
+    EnsureDirectoryRecursive(DirName(path));
+
+    std::wstring line = L"[" + NowForLog() + L"] [" + category + L"] " + message + L"\r\n";
+    std::string u8 = WideToUtf8(line);
+
+    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+
+    DWORD written = 0;
+    WriteFile(h, u8.data(), (DWORD)u8.size(), &written, nullptr);
+    CloseHandle(h);
 }
 
 static std::string ReadFileBytes(const std::wstring& path) {
@@ -401,6 +465,7 @@ static std::wstring InputConfPath(const AppState& st) {
 static void EnsureDefaultJson(const AppState& st) {
     std::wstring path = SavedJsonPath(st);
     if (FileExists(path)) return;
+    LogDebug(L"PRESET", L"creating default preset json: " + path);
     std::wstring json =
         L"{\n"
         L"  \"version\": 2,\n"
@@ -431,6 +496,7 @@ static std::wstring TxtS(const AppState* st, const wchar_t* ja, const wchar_t* e
 }
 
 static void SetStatus(AppState* st, const std::wstring& msg) {
+    LogDebug(L"STATUS", msg);
     if (st && st->hStatus) SetWindowTextW(st->hStatus, msg.c_str());
 }
 
@@ -566,11 +632,15 @@ static std::vector<Candidate> DefaultCandidates() {
 }
 
 static void LoadCandidates(AppState* st) {
+    std::wstring inputPath = InputConfPath(*st);
+    LogDebug(L"CANDIDATE", L"loading candidates from: " + inputPath);
     st->candidates = LoadCandidatesFromInputConf(*st);
     if (st->candidates.empty()) {
         st->candidates = DefaultCandidates();
+        LogDebug(L"CANDIDATE", L"no input.conf candidates. using built-in fallback count=" + std::to_wstring(st->candidates.size()));
         SetStatus(st, TxtS(st, L"input.conf が見つからないため、最小候補だけ読み込みました。配置: portable_config\\input.conf", L"input.conf was not found, so only minimal built-in candidates were loaded. Location: portable_config\\input.conf"));
     } else {
+        LogDebug(L"CANDIDATE", L"loaded input.conf candidate count=" + std::to_wstring(st->candidates.size()));
         SetStatus(st, TxtS(st, L"input.conf から単体フィルター候補を読み込みました: ", L"Loaded available filters from input.conf: ") + std::to_wstring(st->candidates.size()) + TxtS(st, L" 件", L" items"));
     }
 }
@@ -770,7 +840,12 @@ static void PruneCurrentChainAgainstCandidates(AppState* st, bool popup) {
 
 static bool AddSelectedCandidate(AppState* st) {
     int sel = GetSelectedCandidateIndex(st);
-    if (sel < 0 || sel >= (int)st->candidates.size()) return false;
+    if (sel < 0 || sel >= (int)st->candidates.size()) {
+        LogDebug(L"CHAIN", L"add candidate failed: no valid selection");
+        return false;
+    }
+    LogDebug(L"CHAIN", L"add candidate index=" + std::to_wstring(sel) +
+                        L" name=" + st->candidates[(size_t)sel].name);
     int before = (int)st->chain.size();
     for (const auto& it : ItemsFromCandidate(st->candidates[(size_t)sel])) {
         st->chain.push_back(it);
@@ -799,23 +874,34 @@ static bool SendMpvCommandRaw(const std::wstring& pipePath, const std::vector<st
     }
     json += "]}\n";
 
+    LogDebug(L"IPC", L"send: " + ArgsForLog(args));
+
     for (const auto& p : pipes) {
         HANDLE h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
         if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY) {
+            LogDebug(L"IPC", L"pipe busy, waiting: " + p);
             if (WaitNamedPipeW(p.c_str(), 100)) {
                 h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
             }
         }
-        if (h == INVALID_HANDLE_VALUE) continue;
+        if (h == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            LogDebug(L"IPC", L"open failed pipe=" + p + L" err=" + LastErrorForLog(err));
+            continue;
+        }
         DWORD written = 0;
         BOOL ok = WriteFile(h, json.data(), (DWORD)json.size(), &written, nullptr);
+        DWORD writeErr = ok ? ERROR_SUCCESS : GetLastError();
         FlushFileBuffers(h);
         CloseHandle(h);
         if (ok && written == json.size()) {
+            LogDebug(L"IPC", L"send ok pipe=" + p + L" bytes=" + std::to_wstring((unsigned long long)written));
             if (usedPipe) *usedPipe = p;
             return true;
         }
+        LogDebug(L"IPC", L"write failed pipe=" + p + L" written=" + std::to_wstring((unsigned long long)written) + L" err=" + LastErrorForLog(writeErr));
     }
+    LogDebug(L"IPC", L"send failed for all candidate pipes: " + ArgsForLog(args));
     return false;
 }
 
@@ -912,6 +998,9 @@ static void UpdateMpvDropStats(AppState* st) {
         }
         st->lastFrameDropTotal = v;
         st->frameDropCount = delta;
+        if (delta > 0) {
+            LogDebug(L"MPV_STATS", L"frame-drop-count total=" + std::to_wstring(v) + L" delta=" + std::to_wstring(delta));
+        }
 
         st->everConnectedToMpv = true;
         st->pipeLostCount = 0;
@@ -948,6 +1037,10 @@ static bool ApplyChain(AppState* st, bool showStatus) {
     std::vector<std::wstring> glsl;
     std::wstring aspect;
 
+    LogDebug(L"APPLY", L"begin showStatus=" + std::to_wstring(showStatus ? 1 : 0) +
+                        L" preview=" + std::to_wstring(st && st->previewEnabled ? 1 : 0) +
+                        L" chainItems=" + std::to_wstring(st ? st->chain.size() : 0));
+
     for (const auto& item : st->chain) {
         std::vector<ChainItem> expanded = ExpandedItemsFromChainItem(item);
         for (const auto& it : expanded) {
@@ -956,6 +1049,10 @@ static bool ApplyChain(AppState* st, bool showStatus) {
             else if (it.kind == L"ASPECT") aspect = it.payload;
         }
     }
+
+    LogDebug(L"APPLY", L"expanded VF=" + std::to_wstring(vf.size()) +
+                        L" GLSL=" + std::to_wstring(glsl.size()) +
+                        L" aspect=" + (aspect.empty() ? L"<default>" : aspect));
 
     std::wstring used;
     bool ok = true;
@@ -989,6 +1086,7 @@ static bool ApplyChain(AppState* st, bool showStatus) {
         SetStatus(st, TxtS(st, L"mpv IPC pipe に接続できません。mpv.conf の input-ipc-server=\\\\.\\pipe\\mpv-tool を確認してください。UI状態は保存できます。", L"Could not connect to the mpv IPC pipe. Please check input-ipc-server=\\\\.\\pipe\\mpv-tool in mpv.conf. The UI state can still be saved."));
     }
 
+    LogDebug(L"APPLY", ok ? L"end ok" : L"end failed");
     return ok;
 }
 
@@ -1042,6 +1140,7 @@ static void RealtimeApplyEditedChain(AppState* st) {
 }
 
 static bool ClearMpvFiltersOnly(AppState* st, bool showStatus) {
+    LogDebug(L"CLEAR", L"clear mpv filters only showStatus=" + std::to_wstring(showStatus ? 1 : 0));
     std::wstring used;
     bool ok = true;
     ok = ok && SendMpvCommandRaw(st->pipePath, {L"set", L"video-aspect-override", L"-1"}, &used);
@@ -1059,6 +1158,7 @@ static bool ClearMpvFiltersOnly(AppState* st, bool showStatus) {
     } else if (showStatus) {
         SetStatus(st, TxtS(st, L"mpv IPC pipe に接続できません。UI状態はそのままです。", L"Could not connect to the mpv IPC pipe. The UI state was kept as-is."));
     }
+    LogDebug(L"CLEAR", ok ? L"clear end ok" : L"clear end failed");
     return ok;
 }
 
@@ -1136,8 +1236,13 @@ static std::vector<ChainItem> ParseItemsFromObject(const std::wstring& obj) {
 
 static bool LoadAllPresets(AppState* st, std::wstring* lastSelected = nullptr) {
     EnsureDefaultJson(*st);
-    std::string bytes = ReadFileBytes(SavedJsonPath(*st));
-    if (bytes.empty()) return false;
+    std::wstring path = SavedJsonPath(*st);
+    LogDebug(L"PRESET", L"loading presets from: " + path);
+    std::string bytes = ReadFileBytes(path);
+    if (bytes.empty()) {
+        LogDebug(L"PRESET", L"load failed: empty or unreadable preset json");
+        return false;
+    }
     if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB && (unsigned char)bytes[2] == 0xBF) {
         bytes.erase(0, 3);
     }
@@ -1195,6 +1300,8 @@ static bool LoadAllPresets(AppState* st, std::wstring* lastSelected = nullptr) {
 
     if (presets.empty()) presets.push_back({L"Custom 1", {}});
     st->presets = presets;
+    LogDebug(L"PRESET", L"loaded preset count=" + std::to_wstring(st->presets.size()) +
+                         L" lastSelected=" + (lastSelected ? *lastSelected : L""));
     return true;
 }
 
@@ -1227,7 +1334,13 @@ static bool SaveAllPresets(AppState* st, const std::wstring& lastSelectedName) {
     }
     json += L"  ]\n";
     json += L"}\n";
-    return WriteFileUtf8(SavedJsonPath(*st), json);
+    std::wstring path = SavedJsonPath(*st);
+    bool ok = WriteFileUtf8(path, json);
+    LogDebug(L"PRESET", (ok ? L"saved presets: " : L"failed to save presets: ") +
+                         path +
+                         L" lastSelected=" + lastSelectedName +
+                         L" count=" + std::to_wstring(st ? st->presets.size() : 0));
+    return ok;
 }
 
 static int FindPresetByName(AppState* st, const std::wstring& name) {
@@ -1406,8 +1519,14 @@ static bool ShowPresetNameDialog(AppState* st, const wchar_t* title, const wchar
 }
 
 static bool LoadPresetByIndex(AppState* st, int index, bool popupDeleted) {
-    if (index < 0 || index >= (int)st->presets.size()) return false;
+    if (index < 0 || index >= (int)st->presets.size()) {
+        LogDebug(L"PRESET", L"load preset index out of range index=" + std::to_wstring(index));
+        return false;
+    }
 
+    LogDebug(L"PRESET", L"load preset index=" + std::to_wstring(index) +
+                         L" name=" + st->presets[(size_t)index].name +
+                         L" popupDeleted=" + std::to_wstring(popupDeleted ? 1 : 0));
     st->currentPresetIndex = index;
     std::vector<ChainItem> deleted;
     st->chain = FilterDeletedItems(st, st->presets[(size_t)index].items, &deleted);
@@ -1621,6 +1740,7 @@ static void MoveSelected(AppState* st, int mode) {
     if (target == sel) return;
 
     ChainItem item = st->chain[(size_t)sel];
+    LogDebug(L"CHAIN", L"move item name=" + item.name + L" from=" + std::to_wstring(sel) + L" to=" + std::to_wstring(target));
     st->chain.erase(st->chain.begin() + sel);
     st->chain.insert(st->chain.begin() + target, item);
     RefreshChainList(st, target);
@@ -1630,6 +1750,7 @@ static void MoveSelected(AppState* st, int mode) {
 static void DeleteSelected(AppState* st) {
     int sel = (int)SendMessageW(st->hChain, LB_GETCURSEL, 0, 0);
     if (sel < 0 || sel >= (int)st->chain.size()) return;
+    LogDebug(L"CHAIN", L"delete item index=" + std::to_wstring(sel) + L" name=" + st->chain[(size_t)sel].name);
     st->chain.erase(st->chain.begin() + sel);
     RefreshChainList(st, sel);
     RealtimeApplyEditedChain(st);
@@ -1660,6 +1781,7 @@ static LRESULT CALLBACK ChainListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             BOOL outside = HIWORD(r);
             if (!outside && target >= 0 && target < (int)st->chain.size() && target != st->dragIndex) {
                 ChainItem item = st->chain[(size_t)st->dragIndex];
+                LogDebug(L"CHAIN", L"drag move item name=" + item.name + L" from=" + std::to_wstring(st->dragIndex) + L" to=" + std::to_wstring(target));
                 st->chain.erase(st->chain.begin() + st->dragIndex);
                 st->chain.insert(st->chain.begin() + target, item);
                 st->dragIndex = target;
@@ -1721,13 +1843,134 @@ static double QueryCpuLoad(AppState* st) {
     return ClampPercent((busy * 100.0) / (double)total);
 }
 
+static std::wstring LuidToString(const LUID& luid) {
+    wchar_t buf[64]{};
+    swprintf_s(buf, L"%08lx:%08lx", (unsigned long)luid.HighPart, (unsigned long)luid.LowPart);
+    return buf;
+}
+
+static bool SameLuid(const LUID& a, const LUID& b) {
+    return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
+}
+
+static void InitDxgiGpuAdapterMap(AppState* st) {
+    if (!st || st->gpuAdapterMapInitialized) return;
+    st->gpuAdapterMapInitialized = true;
+    st->gpuAdapterValid[0] = false;
+    st->gpuAdapterValid[1] = false;
+    st->gpuAdapterName[0].clear();
+    st->gpuAdapterName[1].clear();
+
+    IDXGIFactory1* factory = nullptr;
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+    if (FAILED(hr) || !factory) {
+        LogDebug(L"GPU", L"CreateDXGIFactory1 failed hr=0x" + std::to_wstring((unsigned long)hr));
+        return;
+    }
+
+    int outIndex = 0;
+    for (UINT i = 0; outIndex < 2; ++i) {
+        IDXGIAdapter1* adapter = nullptr;
+        hr = factory->EnumAdapters1(i, &adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND) break;
+        if (FAILED(hr) || !adapter) continue;
+
+        DXGI_ADAPTER_DESC1 desc{};
+        if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+            if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
+                st->gpuAdapterValid[outIndex] = true;
+                st->gpuAdapterLuid[outIndex] = desc.AdapterLuid;
+                st->gpuAdapterName[outIndex] = desc.Description;
+                LogDebug(L"GPU", L"DXGI GPU" + std::to_wstring(outIndex) +
+                                  L" name=" + st->gpuAdapterName[outIndex] +
+                                  L" luid=" + LuidToString(st->gpuAdapterLuid[outIndex]));
+                ++outIndex;
+            }
+        }
+        adapter->Release();
+    }
+
+    factory->Release();
+}
+
+static bool ParseGpuInstanceLuidParts(const wchar_t* instanceName, unsigned long* partA, unsigned long* partB) {
+    if (!instanceName || !partA || !partB) return false;
+    const wchar_t* p = wcsstr(instanceName, L"luid_");
+    if (!p) return false;
+    p += 5;
+
+    wchar_t a[32]{};
+    wchar_t b[32]{};
+    int ai = 0;
+    while (*p && *p != L'_' && ai < 31) a[ai++] = *p++;
+    a[ai] = 0;
+    if (*p != L'_') return false;
+    ++p;
+    int bi = 0;
+    while (*p && *p != L'_' && bi < 31) b[bi++] = *p++;
+    b[bi] = 0;
+    if (ai == 0 || bi == 0) return false;
+
+    wchar_t* endA = nullptr;
+    wchar_t* endB = nullptr;
+    unsigned long va = wcstoul(a, &endA, 0);
+    unsigned long vb = wcstoul(b, &endB, 0);
+    if (!endA || *endA != 0) {
+        va = wcstoul(a, &endA, 16);
+        if (!endA || *endA != 0) return false;
+    }
+    if (!endB || *endB != 0) {
+        vb = wcstoul(b, &endB, 16);
+        if (!endB || *endB != 0) return false;
+    }
+
+    *partA = va;
+    *partB = vb;
+    return true;
+}
+
+static int MatchGpuAdapterIndexByLuid(const AppState* st, const wchar_t* instanceName) {
+    if (!st || !instanceName) return -1;
+    unsigned long a = 0;
+    unsigned long b = 0;
+    if (!ParseGpuInstanceLuidParts(instanceName, &a, &b)) return -1;
+
+    for (int i = 0; i < 2; ++i) {
+        if (!st->gpuAdapterValid[i]) continue;
+        const LUID& luid = st->gpuAdapterLuid[i];
+
+        // Windows GPU Engine instance names are usually high:low after luid_.
+        // Some drivers/tools show the reverse order, so accept both to avoid
+        // silently dumping the second adapter into GPU0.
+        bool highLow = ((unsigned long)luid.HighPart == a && (unsigned long)luid.LowPart == b);
+        bool lowHigh = ((unsigned long)luid.LowPart == a && (unsigned long)luid.HighPart == b);
+        if (highLow || lowHigh) return i;
+    }
+    return -1;
+}
+
+static std::wstring ExtractGpuEngineKey(const wchar_t* instanceName) {
+    if (!instanceName) return L"unknown";
+    const wchar_t* p = wcsstr(instanceName, L"_eng_");
+    if (p) return std::wstring(p + 1); // eng_0_engtype_3D, eng_0_engtype_Copy, ...
+
+    p = wcsstr(instanceName, L"engtype_");
+    if (p) return std::wstring(p);
+
+    return std::wstring(instanceName);
+}
+
 static void InitGpuLoadMonitor(AppState* st) {
     if (!st || st->gpuQuery || st->gpuCounterReady) return;
+
+    InitDxgiGpuAdapterMap(st);
 
     PDH_STATUS status = PdhOpenQueryW(nullptr, 0, &st->gpuQuery);
     if (status != ERROR_SUCCESS) {
         st->gpuQuery = nullptr;
         st->gpuLoad = -1.0;
+        st->gpuLoad0 = -1.0;
+        st->gpuLoad1 = -1.0;
         return;
     }
 
@@ -1741,11 +1984,37 @@ static void InitGpuLoadMonitor(AppState* st) {
         st->gpuQuery = nullptr;
         st->gpuCounter = nullptr;
         st->gpuLoad = -1.0;
+        st->gpuLoad0 = -1.0;
+        st->gpuLoad1 = -1.0;
         return;
     }
 
     st->gpuCounterReady = true;
     PdhCollectQueryData(st->gpuQuery);
+}
+
+static int ExtractGpuPhysIndex(const wchar_t* instanceName) {
+    if (!instanceName) return -1;
+
+    const wchar_t* p = wcsstr(instanceName, L"phys_");
+    if (!p) return -1;
+    p += 5;
+    if (*p < L'0' || *p > L'9') return -1;
+
+    int idx = 0;
+    while (*p >= L'0' && *p <= L'9') {
+        idx = idx * 10 + (*p - L'0');
+        ++p;
+    }
+    return idx;
+}
+
+static double MaxEngineLoad(const std::map<std::wstring, double>& engineTotals) {
+    double m = -1.0;
+    for (const auto& kv : engineTotals) {
+        if (kv.second > m) m = kv.second;
+    }
+    return m;
 }
 
 static double QueryGpuLoad(AppState* st) {
@@ -1774,14 +2043,72 @@ static double QueryGpuLoad(AppState* st) {
                                           items);
     if (status != ERROR_SUCCESS) return st->gpuLoad;
 
-    double total = 0.0;
+    // Task Manager's adapter-level GPU value is closer to "busy engine" than
+    // "sum of all engine types".  Summing 3D + Copy + Video Decode can easily
+    // show about twice the Task Manager value.  Therefore we first sum by
+    // adapter+engine, then display the busiest engine per adapter.
+    std::map<std::wstring, double> engineByGpu[2];
+    std::map<std::wstring, double> engineByPhys[2]; // fallback only
+    double totalFallback = 0.0;
+    bool sawDxgiMatch[2] = {false, false};
+    bool sawAnyDxgiMatch = false;
+    bool sawAnyPhys = false;
+
+    static bool loggedSamples = false;
+    int loggedCount = 0;
+
     for (DWORD i = 0; i < itemCount; ++i) {
-        if (items[i].FmtValue.CStatus == ERROR_SUCCESS) {
-            double v = items[i].FmtValue.doubleValue;
-            if (v > 0.0) total += v;
+        if (items[i].FmtValue.CStatus != ERROR_SUCCESS) continue;
+
+        double v = items[i].FmtValue.doubleValue;
+        if (v <= 0.0) continue;
+        totalFallback += v;
+
+        std::wstring engineKey = ExtractGpuEngineKey(items[i].szName);
+        int gpuIndex = MatchGpuAdapterIndexByLuid(st, items[i].szName);
+        if (gpuIndex == 0 || gpuIndex == 1) {
+            engineByGpu[gpuIndex][engineKey] += v;
+            sawDxgiMatch[gpuIndex] = true;
+            sawAnyDxgiMatch = true;
+        } else {
+            int phys = ExtractGpuPhysIndex(items[i].szName);
+            if (phys == 0 || phys == 1) {
+                engineByPhys[phys][engineKey] += v;
+                sawAnyPhys = true;
+            }
+        }
+
+        if (!loggedSamples && loggedCount < 12) {
+            LogDebug(L"GPU_SAMPLE", L"idx=" + std::to_wstring((int)gpuIndex) +
+                                      L" value=" + std::to_wstring((int)(v + 0.5)) +
+                                      L" engine=" + engineKey +
+                                      L" name=" + std::wstring(items[i].szName ? items[i].szName : L""));
+            ++loggedCount;
         }
     }
-    return ClampPercent(total);
+    loggedSamples = true;
+
+    double g0 = -1.0;
+    double g1 = -1.0;
+
+    if (sawAnyDxgiMatch) {
+        g0 = sawDxgiMatch[0] ? ClampPercent(MaxEngineLoad(engineByGpu[0])) : 0.0;
+        g1 = sawDxgiMatch[1] ? ClampPercent(MaxEngineLoad(engineByGpu[1])) : (st->gpuAdapterValid[1] ? 0.0 : -1.0);
+    } else if (sawAnyPhys) {
+        // Last-resort fallback for systems where LUID parsing is unavailable.
+        // This is less accurate because phys_N is not guaranteed to equal GPU N.
+        g0 = ClampPercent(MaxEngineLoad(engineByPhys[0]));
+        g1 = ClampPercent(MaxEngineLoad(engineByPhys[1]));
+    } else {
+        // Keep some visible value instead of all N/A if the driver exposes unusual names.
+        g0 = ClampPercent(totalFallback);
+        g1 = -1.0;
+    }
+
+    st->gpuLoad0 = g0;
+    st->gpuLoad1 = g1;
+    st->gpuLoad = ClampPercent((g0 > g1 ? g0 : g1));
+    return st->gpuLoad;
 }
 
 static void ShutdownGpuLoadMonitor(AppState* st) {
@@ -1925,20 +2252,30 @@ static void DrawLoadMeter(AppState* st, HDC paintDc, const RECT& rc) {
         lstrcpyW(dropText, L"Drop N/A");
     }
     SetTextColor(memDc, dropColor);
-    RECT dropRc{5, 1, w / 2 + 38, 14};
+    RECT dropRc{5, 1, 130, 14};
     DrawTextW(memDc, dropText, -1, &dropRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     SetTextColor(memDc, RGB(180, 190, 180));
-    RECT title{w / 2 + 20, 1, w - 5, 12};
+    RECT title{130, 1, w - 5, 12};
     DrawTextW(memDc, L"LOAD", -1, &title, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     if (oldTiny) SelectObject(memDc, oldTiny);
     if (tinyFont) DeleteObject(tinyFont);
 
-    RECT cpuRc{10, 13, w / 2 - 4, h - 4};
-    RECT gpuRc{w / 2 + 4, 13, w - 10, h - 4};
+    const int meterGap = 6;
+    const int meterLeft = 8;
+    const int meterRight = 8;
+    int meterAreaW = w - meterLeft - meterRight - meterGap * 2;
+    int oneW = meterAreaW / 3;
+    if (oneW < 40) oneW = 40;
+
+    RECT cpuRc{meterLeft, 13, meterLeft + oneW, h - 4};
+    RECT gpu0Rc{cpuRc.right + meterGap, 13, cpuRc.right + meterGap + oneW, h - 4};
+    RECT gpu1Rc{gpu0Rc.right + meterGap, 13, w - meterRight, h - 4};
+
     DrawOneMeter(memDc, cpuRc, L"CPU", st ? st->cpuLoad : 0.0, true);
-    DrawOneMeter(memDc, gpuRc, L"GPU", st ? st->gpuLoad : -1.0, st && st->gpuLoad >= 0.0);
+    DrawOneMeter(memDc, gpu0Rc, L"GPU0", st ? st->gpuLoad0 : -1.0, st && st->gpuLoad0 >= 0.0);
+    DrawOneMeter(memDc, gpu1Rc, L"GPU1", st ? st->gpuLoad1 : -1.0, st && st->gpuLoad1 >= 0.0);
 
     BitBlt(paintDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
     SelectObject(memDc, oldBmp);
@@ -2106,7 +2443,7 @@ static void LayoutControls(AppState* st, int w, int clientH) {
     // Leave a dedicated right-bottom area for the load meter.
     // This avoids overlapping the groupbox, which can repaint over custom child windows
     // on some Windows themes and make the meter appear invisible.
-    const int meterW = 164;
+    const int meterW = 252;
     const int meterH = 112;
     int meterX = w - margin - meterW;
     int meterY = clientH - margin - meterH;
@@ -2124,7 +2461,7 @@ static void LayoutControls(AppState* st, int w, int clientH) {
     int innerX = leftX + 14;
     int rowY = groupY + 46;
     const int labelW = 70;
-    const int comboW = 300;
+    const int comboW = 250;
 
     MoveWindowTop(st->hPresetSelectLabel, innerX, rowY + 4, labelW, 20);
     MoveWindowTop(st->hPresetCombo, innerX + labelW, rowY, comboW, 260);
@@ -2133,10 +2470,10 @@ static void LayoutControls(AppState* st, int w, int clientH) {
     if (st->hPresetName) MoveWindow(st->hPresetName, -300, -300, 1, 1, TRUE);
 
     int x = innerX + labelW + comboW + 14;
-    ctrl = GetDlgItem(st->hwnd, IDC_NEW_PRESET);    MoveWindowTop(ctrl, x, rowY, 90, 28);  x += 98;
-    ctrl = GetDlgItem(st->hwnd, IDC_SAVE);          MoveWindowTop(ctrl, x, rowY, 100, 28); x += 108;
-    ctrl = GetDlgItem(st->hwnd, IDC_LOAD);          MoveWindowTop(ctrl, x, rowY, 90, 28);  x += 98;
-    ctrl = GetDlgItem(st->hwnd, IDC_DELETE_PRESET); MoveWindowTop(ctrl, x, rowY, 70, 28);
+    ctrl = GetDlgItem(st->hwnd, IDC_NEW_PRESET);    MoveWindowTop(ctrl, x, rowY, 82, 28);  x += 88;
+    ctrl = GetDlgItem(st->hwnd, IDC_SAVE);          MoveWindowTop(ctrl, x, rowY, 88, 28);  x += 94;
+    ctrl = GetDlgItem(st->hwnd, IDC_LOAD);          MoveWindowTop(ctrl, x, rowY, 82, 28);  x += 88;
+    ctrl = GetDlgItem(st->hwnd, IDC_DELETE_PRESET); MoveWindowTop(ctrl, x, rowY, 64, 28);
 
     if (st->hLoadMeter) {
         MoveWindowTop(st->hLoadMeter, meterX, meterY, meterW, meterH);
@@ -2155,7 +2492,7 @@ static void CreateControls(AppState* st) {
 
     RegisterLoadMeterClass(st->hInst);
     st->hLoadMeter = CreateWindowExW(WS_EX_CLIENTEDGE, L"mpv_filter_chain_UI_load_meter", L"",
-                                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 900, 496, 164, 112,
+                                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 812, 496, 252, 112,
                                      st->hwnd, (HMENU)IDC_LOAD_METER, st->hInst, st);
 
     st->hChainLabel = MakeLabel(st->hwnd, L"現在のチェーン（ドラッグで並べ替え可）");
@@ -2204,6 +2541,7 @@ static void CreateControls(AppState* st) {
 static void OnCommand(AppState* st, WPARAM wp, LPARAM) {
     int id = LOWORD(wp);
     int code = HIWORD(wp);
+    LogDebug(L"COMMAND", L"WM_COMMAND id=" + std::to_wstring(id) + L" code=" + std::to_wstring(code));
 
     switch (id) {
     case IDC_PRESET_COMBO:
@@ -2329,6 +2667,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         st = (AppState*)cs->lpCreateParams;
         st->hwnd = hwnd;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
+        LogDebug(L"APP", L"WM_CREATE baseDir=" + st->baseDir + L" pipePath=" + st->pipePath);
         CreateControls(st);
         EnsureDefaultJson(*st);
         LoadCandidates(st);
@@ -2378,6 +2717,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         if (st) {
+            LogDebug(L"APP", L"WM_DESTROY");
             ShutdownGpuLoadMonitor(st);
             std::wstring last = L"Custom 1";
             int sel = (int)SendMessageW(st->hPresetCombo, CB_GETCURSEL, 0, 0);
@@ -2408,11 +2748,13 @@ static CmdOptions ParseCommandLine() {
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     CmdOptions opt = ParseCommandLine();
+    LogDebug(L"APP", L"startup resetUi=" + std::to_wstring(opt.resetUi ? 1 : 0) + L" pipePath=" + opt.pipePath);
 
     HANDLE hMutex = CreateMutexW(nullptr, FALSE, APP_MUTEX_NAME);
     bool already = (GetLastError() == ERROR_ALREADY_EXISTS);
 
     if (already) {
+        LogDebug(L"APP", L"another instance already exists");
         if (opt.resetUi) {
             HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, APP_RESET_EVENT_NAME);
             if (ev) {
@@ -2436,6 +2778,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     AppState st;
     st.hInst = hInst;
     st.baseDir = GetModuleDir();
+    LogDebug(L"APP", L"baseDir=" + st.baseDir);
     st.pipePath = opt.pipePath;
     st.hResetEvent = CreateEventW(nullptr, TRUE, FALSE, APP_RESET_EVENT_NAME);
 
@@ -2472,6 +2815,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     HWND hwnd = CreateWindowExW(0, APP_CLASS_NAME, L"mpv filter chain UI", APP_WINDOW_STYLE,
         CW_USEDEFAULT, CW_USEDEFAULT, fixedWindowW, fixedWindowH, nullptr, nullptr, hInst, &st);
     if (!hwnd) {
+        LogDebug(L"APP", L"CreateWindowEx failed err=" + LastErrorForLog(GetLastError()));
         if (st.hResetEvent) CloseHandle(st.hResetEvent);
         if (hMutex) CloseHandle(hMutex);
         return 1;
@@ -2488,6 +2832,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
         DispatchMessageW(&msg);
     }
 
+    LogDebug(L"APP", L"message loop ended");
     if (st.hResetEvent) CloseHandle(st.hResetEvent);
     if (hMutex) CloseHandle(hMutex);
     return 0;
