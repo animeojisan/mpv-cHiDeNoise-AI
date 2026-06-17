@@ -75,6 +75,12 @@ Tools and Scripts
 ・mpvCapGC_60_YUV.exe
   ウィンドウキャプチャ
 
+・cHiDeScaler.exe
+  ウィンドウキャプチャ拡大表示（mpvフィルター適用）
+  任意のウィンドウを WGC で取り込み、mpv のフィルターを掛けて拡大表示。
+  マウス／キーボード操作は背後の元ウィンドウへ透過（操作したまま拡大可）。
+  mpv.exe と同じ場所の cHiDeScaler\ フォルダに配置して使用。
+
 ・mpv-W.exe
   多重起動を防ぐ
 
