@@ -674,9 +674,3 @@ authors grant the U.S. Government and others acting in its behalf
 permission to use and distribute the software in accordance with the
 terms specified in this license.
 
-
-
-opencv-python … Apache License 2.0
-numpy … BSD-3-Clause
-windows-capture … MIT
-PyInstaller（ブートローダ）… GPL＋例外条項（凍結アプリは任意ライセンスで配布可）
