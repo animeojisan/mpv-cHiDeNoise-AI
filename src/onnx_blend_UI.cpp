@@ -438,21 +438,9 @@ void SaveSettings() {
     std::ofstream ofs(fs::path(g_configPath), std::ios::binary | std::ios::trunc);
     ofs << jsonText;
 
-    // v15 compatibility:
-    // Some existing input.conf entries may still load the old script name:
-    //   portable_config\vs\onnx_blend_gui.vpy
-    // Older vpy files look for:
-    //   portable_config\cache\onnx_blend_gui\settings.json
-    // Write the same settings there as well so the UI controls still affect
-    // a legacy onnx_blend_gui.vpy filter already registered by mpv_filter_chain_UI.
-    try {
-        std::wstring legacyConfigDir = (fs::path(g_exeDir) / L"portable_config" / L"cache" / L"onnx_blend_gui").wstring();
-        fs::create_directories(fs::path(legacyConfigDir));
-        std::wstring legacyConfigPath = (fs::path(legacyConfigDir) / L"settings.json").wstring();
-        std::ofstream legacyOfs(fs::path(legacyConfigPath), std::ios::binary | std::ios::trunc);
-        legacyOfs << jsonText;
-    } catch (...) {
-    }
+    // Current settings are stored only in:
+    //   portable_config\cache\onnx_blend_ui\settings.json
+    // Do not mirror settings to the legacy onnx_blend_gui folder.
 }
 
 void SetStatus(const std::wstring& msg) {
