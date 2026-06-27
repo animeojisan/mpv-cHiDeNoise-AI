@@ -4,6 +4,7 @@
 // Quality Preview ON registers/reloads @onnx_blend_ui for realtime checking.
 // Quality Preview OFF removes @onnx_blend_ui.
 // v20: syncs Quality Preview checkbox exactly with onnx_blend_ui.vpy mpv vf on/off changes.
+// v21: removes user-facing Original opacity. Keep original_opacity fixed at 1.000 for stability.
 // Build:
 // cl /nologo /EHsc /std:c++17 /utf-8 onnx_blend_UI.cpp /Fe:onnx_blend_UI.exe ^
 //   user32.lib gdi32.lib comctl32.lib comdlg32.lib shell32.lib advapi32.lib
@@ -47,6 +48,7 @@ constexpr UINT_PTR kMpvWatchTimer = 7002;
 constexpr UINT kAutoApplyDelayMs = 900;
 constexpr UINT kMpvWatchIntervalMs = 150;
 constexpr DWORD kMpvFilterSyncIntervalMs = 600;
+constexpr double kFixedOriginalOpacity = 1.00;
 
 constexpr int IDC_ENABLE          = 1001;
 constexpr int IDC_AUTO_APPLY      = 1002;
@@ -65,8 +67,6 @@ constexpr int IDC_ENGINE1_TRACK   = 1401;
 constexpr int IDC_ENGINE1_VALUE   = 1402;
 constexpr int IDC_ENGINE2_TRACK   = 1411;
 constexpr int IDC_ENGINE2_VALUE   = 1412;
-constexpr int IDC_ORIGINAL_TRACK  = 1421;
-constexpr int IDC_ORIGINAL_VALUE  = 1422;
 constexpr int IDC_APPLY           = 1501;
 constexpr int IDC_REMOVE          = 1502;
 constexpr int IDC_RESET           = 1503;
@@ -127,9 +127,6 @@ HWND hEngine1Value = nullptr;
 HWND hEngine2AmountLabel = nullptr;
 HWND hEngine2Track = nullptr;
 HWND hEngine2Value = nullptr;
-HWND hOriginalOpacityLabel = nullptr;
-HWND hOriginalTrack = nullptr;
-HWND hOriginalValue = nullptr;
 HWND hApplyButton = nullptr;
 HWND hRemoveButton = nullptr;
 HWND hResetButton = nullptr;
@@ -365,7 +362,9 @@ void LoadSettings() {
     RegexString(text, "blend_mode", g_settings.blendMode);
     RegexDouble(text, "engine1_amount", g_settings.engine1Amount);
     RegexDouble(text, "engine2_amount", g_settings.engine2Amount);
-    RegexDouble(text, "original_opacity", g_settings.originalOpacity);
+    // v21: legacy setting is intentionally ignored. This control is removed from UI
+    // and the generated settings are kept at 1.000 to avoid unstable preview reloads.
+    g_settings.originalOpacity = kFixedOriginalOpacity;
     RegexBool(text, "diff_luma_only", g_settings.diffLumaOnly);
     RegexBool(text, "auto_apply", g_settings.autoApply);
     RegexString(text, "test_mode", g_settings.testMode);
@@ -388,7 +387,7 @@ void SaveSettings() {
     EnsureDirectories();
     g_settings.engine1Amount = Clamp01(g_settings.engine1Amount);
     g_settings.engine2Amount = Clamp01(g_settings.engine2Amount);
-    g_settings.originalOpacity = Clamp01(g_settings.originalOpacity);
+    g_settings.originalOpacity = kFixedOriginalOpacity;
 
     // Keep the config portable and restrict the normal GUI path to 55ai.
     if (!ExistingModelIsIn55ai(g_settings.engine1Model)) {
@@ -448,6 +447,7 @@ void SetStatus(const std::wstring& msg) {
 }
 
 std::wstring GetWindowTextString(HWND h) {
+    if (!h) return L"";
     int len = GetWindowTextLengthW(h);
     if (len <= 0) return L"";
     std::wstring s(len + 1, L'\0');
@@ -494,11 +494,12 @@ std::wstring FormatAmount(double v) {
 
 void SetTrack(HWND track, HWND edit, double v) {
     int pos = static_cast<int>(std::lround(Clamp01(v) * 100.0));
-    SendMessageW(track, TBM_SETPOS, TRUE, pos);
-    SetWindowTextW(edit, FormatAmount(v).c_str());
+    if (track) SendMessageW(track, TBM_SETPOS, TRUE, pos);
+    if (edit) SetWindowTextW(edit, FormatAmount(v).c_str());
 }
 
 double GetTrackAmount(HWND track) {
+    if (!track) return 0.0;
     int pos = static_cast<int>(SendMessageW(track, TBM_GETPOS, 0, 0));
     return Clamp01(pos / 100.0);
 }
@@ -529,11 +530,11 @@ void GatherSettingsFromUi() {
     catch (...) { g_settings.engine1Amount = GetTrackAmount(hEngine1Track); }
     try { g_settings.engine2Amount = Clamp01(std::stod(GetWindowTextString(hEngine2Value))); }
     catch (...) { g_settings.engine2Amount = GetTrackAmount(hEngine2Track); }
-    try { g_settings.originalOpacity = Clamp01(std::stod(GetWindowTextString(hOriginalValue))); }
-    catch (...) { g_settings.originalOpacity = GetTrackAmount(hOriginalTrack); }
+    // Original opacity is no longer user-editable. Keep it fixed even if an old UI/control
+    // handle or stale settings.json value exists.
+    g_settings.originalOpacity = kFixedOriginalOpacity;
     SetTrack(hEngine1Track, hEngine1Value, g_settings.engine1Amount);
     SetTrack(hEngine2Track, hEngine2Value, g_settings.engine2Amount);
-    SetTrack(hOriginalTrack, hOriginalValue, g_settings.originalOpacity);
     g_settings.diffLumaOnly = IsChecked(hLumaOnly);
     g_settings.autoApply = IsChecked(hAutoApply);
     g_settings.alwaysOnTop = IsChecked(hAlwaysOnTop);
@@ -562,7 +563,7 @@ void UpdateLanguageUi() {
 
     if (hEngine1AmountLabel) SetWindowTextW(hEngine1AmountLabel, Txt(L"Engine 1 強度", L"Engine 1 amount"));
     if (hEngine2AmountLabel) SetWindowTextW(hEngine2AmountLabel, Txt(L"Engine 2 強度", L"Engine 2 amount"));
-    if (hOriginalOpacityLabel) SetWindowTextW(hOriginalOpacityLabel, Txt(L"元映像の濃さ", L"Original opacity"));
+    // Original opacity control was removed in v21.
 
     // Apply / Remove buttons are not used. Quality preview checkbox is the main ON/OFF control.
     if (hResetButton) SetWindowTextW(hResetButton, Txt(L"初期化", L"Reset"));
@@ -587,7 +588,7 @@ void RefreshUiFromSettings() {
     SetComboItems(hCompareMode, {L"off", L"blend", L"half", L"side_by_side", L"simple2x", L"engine1_only", L"engine2_only"}, g_settings.testMode);
     SetTrack(hEngine1Track, hEngine1Value, g_settings.engine1Amount);
     SetTrack(hEngine2Track, hEngine2Value, g_settings.engine2Amount);
-    SetTrack(hOriginalTrack, hOriginalValue, g_settings.originalOpacity);
+    g_settings.originalOpacity = kFixedOriginalOpacity;
     SetCheck(hLumaOnly, g_settings.diffLumaOnly);
     SetCheck(hAutoApply, g_settings.autoApply);
     SetCheck(hAlwaysOnTop, g_settings.alwaysOnTop);
@@ -1243,16 +1244,14 @@ void CreateUi(HWND hwnd) {
     hEngine2Track = MakeTrack(150, 286, 430, 36, IDC_ENGINE2_TRACK);
     hEngine2Value = MakeEdit(L"0.35", 600, 290, 60, 24, IDC_ENGINE2_VALUE);
 
-    hOriginalOpacityLabel = MakeControl(L"STATIC", L"元映像の濃さ", 0, 16, 340, 130, 22, nullptr);
-    hOriginalTrack = MakeTrack(150, 332, 430, 36, IDC_ORIGINAL_TRACK);
-    hOriginalValue = MakeEdit(L"1.00", 600, 336, 60, 24, IDC_ORIGINAL_VALUE);
-
+    // v21: "元映像の濃さ / Original opacity" was removed from the options.
+    // Internally original_opacity is still written as 1.000 for vpy/config compatibility.
     // This tool is a quality settings editor.  It does not add/remove the mpv vf filter.
     // mpv_filter_chain_UI should manage insertion/removal/order.
-    hResetButton = MakeButton(L"初期化", 16, 392, 110, 34, IDC_RESET);
-    hOpenSettingsButton = MakeButton(L"設定フォルダを開く", 138, 392, 170, 34, IDC_OPEN_SETTINGS);
+    hResetButton = MakeButton(L"初期化", 16, 346, 110, 34, IDC_RESET);
+    hOpenSettingsButton = MakeButton(L"設定フォルダを開く", 138, 346, 170, 34, IDC_OPEN_SETTINGS);
 
-    hStatus = MakeControl(L"STATIC", L"準備完了。", 0, 16, 444, 730, 28, nullptr);
+    hStatus = MakeControl(L"STATIC", L"準備完了。", 0, 16, 398, 730, 28, nullptr);
 
     EnumChildWindows(hwnd, [](HWND child, LPARAM lp) -> BOOL {
         SendMessageW(child, WM_SETFONT, lp, TRUE);
@@ -1349,10 +1348,6 @@ void OnHScroll(HWND, WPARAM, LPARAM lParam) {
         g_settings.engine2Amount = GetTrackAmount(hEngine2Track);
         SetWindowTextW(hEngine2Value, FormatAmount(g_settings.engine2Amount).c_str());
         ScheduleDynamicAmountUpdate();
-    } else if (h == hOriginalTrack) {
-        g_settings.originalOpacity = GetTrackAmount(hOriginalTrack);
-        SetWindowTextW(hOriginalValue, FormatAmount(g_settings.originalOpacity).c_str());
-        ScheduleDynamicAmountUpdate();
     }
 }
 
@@ -1379,7 +1374,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             int id = LOWORD(wParam);
             if (id == IDC_ENGINE1_VALUE) CommitEditAmount(hEngine1Value, hEngine1Track, g_settings.engine1Amount);
             else if (id == IDC_ENGINE2_VALUE) CommitEditAmount(hEngine2Value, hEngine2Track, g_settings.engine2Amount);
-            else if (id == IDC_ORIGINAL_VALUE) CommitEditAmount(hOriginalValue, hOriginalTrack, g_settings.originalOpacity);
         }
         return 0;
     case WM_HSCROLL:
@@ -1464,7 +1458,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         790,
-        530,
+        485,
         nullptr,
         nullptr,
         hInstance,
