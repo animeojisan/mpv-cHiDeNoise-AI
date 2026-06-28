@@ -7,7 +7,7 @@ This is an AI-enhanced playback player derived from mpv ([mpv-lazy](https://gith
 
 It includes a wide variety of tools such as AI upscaling using ONNX, frame interpolation, GLSL shaders like Anime4K, and VapourSynth filters.
 
-With original features such as [window capture](https://www.youtube.com/watch?v=xrgJoh29bpM), [external input capture](https://youtu.be/Cnx0tj_a4UQ?si=720YPOgsZ9lfGc9s), and [VSR ONNX support](https://youtu.be/A4qxclRe3IU?si=IZfu81p-jKr19jVa), it enables high-quality viewing for many kinds of video sources.
+With original features such as [window capture](https://youtu.be/Yna7JtoJDJA), [external input capture](https://youtu.be/Cnx0tj_a4UQ?si=720YPOgsZ9lfGc9s), and [VSR ONNX support](https://youtu.be/A4qxclRe3IU?si=IZfu81p-jKr19jVa), it enables high-quality viewing for many kinds of video sources.
 
 This repository is a personal repository for managing self-made files and edited files related to “mpv-cHiDeNoise-AI” on GitHub.
 
@@ -43,7 +43,7 @@ mpv-cHiDeNoise-AI
 
 onnxを使用したAIアップスケーリング、フレーム補間、Anime4KなどのGLSLシェーダー、vapoursynthフィルターなど多種多様なツールを搭載。
 
-独自の [ウィンドウキャプチャ](https://www.youtube.com/watch?v=xrgJoh29bpM) / [外部入力キャプチャ機能](https://youtu.be/Cnx0tj_a4UQ?si=720YPOgsZ9lfGc9s)、[VSRのonnx対応](https://youtu.be/A4qxclRe3IU?si=IZfu81p-jKr19jVa) などにより様々な映像ソースが高画質で視聴可能になります。
+独自の [ウィンドウキャプチャ](https://youtu.be/Yna7JtoJDJA) / [外部入力キャプチャ機能](https://youtu.be/Cnx0tj_a4UQ?si=720YPOgsZ9lfGc9s)、[VSRのonnx対応](https://youtu.be/A4qxclRe3IU?si=IZfu81p-jKr19jVa) などにより様々な映像ソースが高画質で視聴可能になります。
 
 本リポジトリは、「mpv-cHiDeNoise-AI」関連の自作ファイルや編集済みファイルを GitHub 上で管理するための個人用リポジトリです。
 
