@@ -1,0 +1,30 @@
+### 2x_umzi_mahou_rtmosr_fp16_op17 / NeoRTX Backend Pack
+from vapoursynth import core
+# Find the application root even when this VPY is in a backend subfolder.
+from pathlib import Path as _NeoPath
+import sys as _neo_sys
+_neo_app_root = next((_p for _p in _NeoPath(__file__).resolve().parents
+                      if (_p / "backends").is_dir() and (_p / "vs-plugins" / "models").is_dir()), None)
+if _neo_app_root is None:
+    raise RuntimeError("mpv application root was not found above this VPY")
+for _neo_module_dir in reversed((_neo_app_root, _neo_app_root / "vs-scripts")):
+    if str(_neo_module_dir) not in _neo_sys.path:
+        _neo_sys.path.insert(0, str(_neo_module_dir))
+
+import k7sfunc1 as k7f
+import neogpu_mpv_fast as neo
+
+core.num_threads = 16
+clip = video_in
+H_Pre = 1080
+Model = "55ai/2x_umzi_mahou_rtmosr_fp16_op17.onnx"
+Gpu = 0
+H_Max = 2160
+Lk_Fmt = False
+Matrix = "709"
+
+clip = k7f.FMT_CTRL(clip, h_max=H_Pre, fmt_pix=1 if Lk_Fmt else 0, vs_t=core.num_threads)
+clip = neo.image(clip, backend="NeoRTX", model=Model, gpu=Gpu, matrix=Matrix,
+                 mode=0, log=False, output_resizer="bilinear")
+clip = k7f.FMT_CTRL(clip, h_max=H_Max, fmt_pix=1 if Lk_Fmt else 0, vs_t=core.num_threads)
+clip.set_output()
